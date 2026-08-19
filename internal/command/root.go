@@ -21,12 +21,12 @@ func NewRoot(env *Env) *cobra.Command {
 	root.SetIn(env.In)
 
 	f := root.PersistentFlags()
-	f.StringVar(&env.format, "format", "", "output format: json, yaml, table or value(field,...)")
-	f.StringVar(&env.profile, "profile", "", "named profile to use")
-	f.StringVar(&env.host, "host", "", "API host to talk to")
-	f.StringVar(&env.project, "project", "", "project to act on")
-	f.StringVar(&env.app, "app", "", "app to act on")
-	f.BoolVar(&env.debug, "debug", false, "print request diagnostics, with credentials redacted")
+	f.StringVar(&env.flags.format, "format", "", "output format: json, yaml, table or value(field,...)")
+	f.StringVar(&env.flags.profile, "profile", "", "named profile to use")
+	f.StringVar(&env.flags.host, "host", "", "API host to talk to")
+	f.StringVar(&env.flags.project, "project", "", "project to act on")
+	f.StringVar(&env.flags.app, "app", "", "app to act on")
+	f.BoolVar(&env.flags.debug, "debug", false, "print request diagnostics, with credentials redacted")
 
 	root.AddCommand(
 		newAuthCommand(env),

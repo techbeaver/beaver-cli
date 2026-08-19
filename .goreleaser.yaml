@@ -1,0 +1,120 @@
+version: 2
+
+project_name: beaver
+
+before:
+  hooks:
+    - go mod tidy
+    - ./scripts/check-no-secrets.sh
+
+builds:
+  - id: beaver
+    main: ./cmd/beaver
+    binary: beaver
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: beaver
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# Notarise the macOS builds. quill runs on any platform, so this needs no macOS
+# runner. Skipped when the secrets are absent, which is how a fork builds.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      ids: [beaver]
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY }}"
+
+# Keyless signing: the signature is bound to the GitHub Actions identity that
+# produced it, so a customer verifies provenance without us holding a key.
+binary_signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - --output-signature=${signature}
+      - --output-certificate=${certificate}
+      - ${artifact}
+      - --yes
+    output: true
+
+brews:
+  - name: beaver
+    repository:
+      owner: techbeaver
+      name: homebrew-tap
+    homepage: https://techbeaver.io
+    description: The TechBeaver command line interface
+    license: Apache-2.0
+    skip_upload: auto
+
+scoops:
+  - repository:
+      owner: techbeaver
+      name: scoop-bucket
+    homepage: https://techbeaver.io
+    description: The TechBeaver command line interface
+    license: Apache-2.0
+    skip_upload: auto
+
+release:
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Install
+
+    ```sh
+    curl -fsSL https://techbeaver.io/install.sh | sh
+    ```
+
+    ## Verify what you downloaded
+
+    Every binary is signed with cosign, keyless, so the signature is bound to
+    the GitHub Actions run that built it rather than to a key we hold.
+
+    ```sh
+    cosign verify-blob \
+      --certificate beaver_{{ .Version }}_linux_amd64.pem \
+      --signature   beaver_{{ .Version }}_linux_amd64.sig \
+      --certificate-identity-regexp 'https://github.com/techbeaver/beaver-cli' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      beaver_{{ .Version }}_linux_amd64
+    ```
+
+    Checksums are in `checksums.txt`.
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'

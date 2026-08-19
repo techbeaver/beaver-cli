@@ -29,6 +29,21 @@ type Env struct {
 	Loader *config.Loader
 	IsTTY  bool
 
+	// Format and the fields below it are the programmatic defaults. Command
+	// line flags are held separately in flags, because binding a flag directly
+	// to these would overwrite them with the flag's empty default the moment
+	// the flag is registered.
+	Format  string
+	Profile string
+	Host    string
+	Project string
+	App     string
+
+	flags flagValues
+}
+
+// flagValues holds what the command line supplied this invocation.
+type flagValues struct {
 	format  string
 	profile string
 	host    string
@@ -37,19 +52,26 @@ type Env struct {
 	debug   bool
 }
 
+func pick(flag, programmatic string) string {
+	if flag != "" {
+		return flag
+	}
+	return programmatic
+}
+
 // Resolve applies the configuration precedence for this invocation.
 func (e *Env) Resolve() (*config.Resolved, error) {
 	return e.Loader.Resolve(config.Overrides{
-		Profile: e.profile,
-		Host:    e.host,
-		Project: e.project,
-		App:     e.app,
+		Profile: pick(e.flags.profile, e.Profile),
+		Host:    pick(e.flags.host, e.Host),
+		Project: pick(e.flags.project, e.Project),
+		App:     pick(e.flags.app, e.App),
 	})
 }
 
 // Writer builds the renderer for this invocation.
 func (e *Env) Writer() (*output.Writer, error) {
-	spec, err := output.ParseFormat(e.format, e.IsTTY)
+	spec, err := output.ParseFormat(pick(e.flags.format, e.Format), e.IsTTY)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", exitcode.ErrUsage, err)
 	}
