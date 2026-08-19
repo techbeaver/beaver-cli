@@ -23,3 +23,5 @@ of its remaining claims to trust.
 | [0010](0010-credential-storage.md) | Credential storage: keychain, with a 0600 file fallback | Accepted |
 | [0011](0011-consumer-declared-interfaces.md) | Interfaces are declared by consumers | Accepted |
 | [0012](0012-distribution-install-script-first.md) | Install script first, package managers are tier 2 | Accepted |
+| [0013](0013-scope-vocabulary.md) | The scope vocabulary, and its two invariants | Accepted |
+| [0014](0014-http-only-api-client.md) | The client speaks HTTP only, and re-implements no rule | Accepted |
