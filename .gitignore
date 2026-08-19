@@ -1,0 +1,12 @@
+/dist/
+/beaver
+/beaver.exe
+*.test
+*.out
+.DS_Store
+.idea/
+.vscode/
+*.p12
+*.p8
+.env
+.env.*
