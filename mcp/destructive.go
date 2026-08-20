@@ -84,8 +84,7 @@ func performDestructive(ctx context.Context, deps *Deps, call *Call, confirmatio
 		return nil, err
 	}
 
-	// Layer 3. Where the client supports it, ask the user directly and then wait
-	// for the approval to land, so the whole thing finishes in one tool call.
+	// Layer 3. Ask the user directly, then wait, so one tool call finishes it.
 	if approved := askAndWait(ctx, deps, call, pending); approved {
 		return executeDestructive(ctx, deps, call, pending.Token, spec)
 	}
@@ -152,9 +151,7 @@ func executeDestructive(ctx context.Context, deps *Deps, call *Call, confirmatio
 		Summary:      fmt.Sprintf("Done: %s %s.", spec.Action, describeResource(spec)),
 		RecoveryNote: spec.RecoveryNote,
 		Result:       item,
-		// Stated in the output of the action itself, not only in the preview the
-		// customer saw before approving. By the time this matters they will have
-		// scrolled past the preview.
+		// Restated at deletion: the preview has been scrolled past by the time it matters.
 		NextStep: "Tell the customer plainly what was removed and how to recover it: " + spec.RecoveryNote,
 	}, nil
 }
@@ -176,9 +173,7 @@ func askAndWait(ctx context.Context, deps *Deps, call *Call, pending *pendingCon
 	}
 	prompt := "TechBeaver needs you to approve this in your browser. Open the link, approve it, then come back. " + message
 
-	// URL-mode elicitation is exactly this shape: here is a link, go and do
-	// something. Clients that only support the older form mode fall through to
-	// a yes/no, which is worth less but is still a person being asked.
+	// URL-mode elicitation is this shape; form-mode clients fall through to a yes/no.
 	_, err := call.MCP.Session.Elicit(ctx, &mcpsdk.ElicitParams{
 		Mode:    "url",
 		Message: prompt,
@@ -204,9 +199,7 @@ func askAndWait(ctx context.Context, deps *Deps, call *Call, pending *pendingCon
 		}
 	}
 
-	// Whatever the client said, the only thing that counts is whether the
-	// approval landed in TechBeaver. A client could answer "accept" without a
-	// person having seen anything.
+	// Only the approval landing counts: a client can answer "accept" on its own.
 	return waitForApproval(ctx, deps, call, pending.Id)
 }
 

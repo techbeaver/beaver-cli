@@ -122,11 +122,7 @@ func register[In, Out any](r *Registry, spec toolSpec, handler func(context.Cont
 				if err != nil {
 					return nil, zero, err
 				}
-				// Belt and braces. The tool was only listed because the caller
-				// holds these scopes, but a client can call a tool it was never
-				// shown, and the API would refuse it anyway. Refusing here means
-				// the model gets a sentence it can act on rather than a 403 it
-				// has to interpret.
+				// A client can call a tool it was never shown; refusing here gives a usable sentence.
 				if !session.Identity.HasAll(spec.Scopes) {
 					return nil, zero, fmt.Errorf(
 						"this connection was not granted %s. Ask the account owner to reconnect it with that permission",

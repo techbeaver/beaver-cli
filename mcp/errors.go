@@ -29,8 +29,7 @@ func describeAPIError(err error) error {
 
 	switch normaliseCode(apiErr.Code) {
 	case "service_paused":
-		// An admin's circuit breaker. Retrying into it is how a maintenance
-		// window becomes a thundering herd.
+		// An admin's circuit breaker: retrying turns a maintenance window into a herd.
 		return fmt.Errorf("TechBeaver has paused this action: %s. This is a deliberate operator decision, not a temporary error. Tell the customer what it says and stop; do not retry", apiErr.Message)
 
 	case "confirmation_required", "confirmation_pending":
@@ -72,9 +71,7 @@ func describeAPIError(err error) error {
 
 	switch apiErr.StatusCode {
 	case http.StatusNotFound:
-		// Ownership failures return 404 rather than 403 throughout this platform,
-		// deliberately, so that an identifier cannot be probed for existence. The
-		// agent should be told both readings.
+		// Ownership failures are 404 platform-wide so ids cannot be probed; say both.
 		return fmt.Errorf("%s Either that identifier is wrong or it belongs to another account. List the resources on this account and use an identifier from that list", apiErr.Message)
 
 	case http.StatusPaymentRequired:

@@ -37,8 +37,7 @@ func TestEveryToolIsDescribed(t *testing.T) {
 }
 
 func TestToolNamesAreStable(t *testing.T) {
-	// Customers pin tool names in prompts and automations, so a rename is a
-	// breaking change. Listing them here means one cannot happen by accident.
+	// Tool names are pinned in prompts, so a rename cannot happen by accident.
 	expected := map[string]bool{
 		"whoami": true, "check_service_status": true,
 		"list_regions": true, "list_projects": true, "get_project": true, "create_project": true,
@@ -76,10 +75,7 @@ func TestToolNamesAreStable(t *testing.T) {
 }
 
 func TestNoToolDescriptionQuotesAPriceOrAPlanName(t *testing.T) {
-	// The rule the plan set for itself, and then broke in its own first draft:
-	// prices, plan names, regions and limits are operator-editable data, and a
-	// model must never be in a position to recall one. A number baked into a
-	// description is exactly that.
+	// Operator-editable data must never be recallable from a tool description.
 	banned := []string{"NGN", "₦", "USD", "$", "7.5%", "hobby plan", "pro plan", "free plan", "eu-west", "af-south"}
 	for _, spec := range allSpecs(t) {
 		lower := strings.ToLower(spec.Description)
@@ -105,9 +101,7 @@ func TestDestructiveToolsRequireADestroyScope(t *testing.T) {
 		if spec.ReadOnly {
 			t.Errorf("tool %q is marked both read-only and destructive", spec.Name)
 		}
-		// stop_app is the deliberate exception: it is annotated destructive so a
-		// client prompts, but it destroys nothing. The record and the data
-		// survive and start_app reverses it, so it needs write, not destroy.
+		// stop_app is annotated destructive so clients prompt, but start_app reverses it.
 		if spec.Name == "stop_app" {
 			continue
 		}
@@ -155,9 +149,7 @@ func TestEveryToolScopeIsGrantable(t *testing.T) {
 }
 
 func TestNoToolCanSpendMoneyWithoutAPaymentPage(t *testing.T) {
-	// The guarantee the whole billing story rests on. If a tool ever requires
-	// billing:spend, this fails, and it should: adding one means shipping the
-	// spend-cap mechanism first.
+	// If a tool ever requires billing:spend this fails, and it should.
 	for _, spec := range allSpecs(t) {
 		for _, s := range spec.Scopes {
 			if s == scopes.BillingSpend {
@@ -168,8 +160,7 @@ func TestNoToolCanSpendMoneyWithoutAPaymentPage(t *testing.T) {
 }
 
 func TestScopeFilteringHidesToolsTheCallerCannotUse(t *testing.T) {
-	// Filtering the LIST, not only the calls, is the point. A model that can see
-	// delete_database will eventually suggest it.
+	// Filtering the list matters: a model that can see delete_database suggests it.
 	readOnly := &Identity{Scopes: []string{scopes.ProjectsRead, scopes.PaaSRead, scopes.DBaaSRead, scopes.BillingRead}}
 	deps := &Deps{Client: client.New("http://example.invalid", "beaver-mcp"), Config: Config{}}
 	server := AllTools().Build(deps, readOnly)
@@ -177,9 +168,7 @@ func TestScopeFilteringHidesToolsTheCallerCannotUse(t *testing.T) {
 		t.Fatal("expected a server")
 	}
 
-	// Rebuild the same filtering the registry does, and assert on it directly:
-	// the SDK's tool list is only reachable over a session, and this is the
-	// property worth pinning.
+	// Asserted directly, because the SDK's tool list is only reachable over a session.
 	visible := map[string]bool{}
 	for _, spec := range AllTools().Specs() {
 		if readOnly.HasAll(spec.Scopes) {

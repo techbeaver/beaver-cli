@@ -106,8 +106,7 @@ func registerDatabaseTools(r *Registry) {
 			return nil, err
 		}
 		if !in.IncludeSecrets {
-			// A connection string embeds the password, so it goes too. Returning
-			// the URI and calling the password redacted would be theatre.
+			// A connection string embeds the password, so it goes too.
 			item = omit(item, "password", "connectionString", "uri", "dsn", "url")
 			return &ObjectResult{
 				Summary: "Connection details, without the password. Ask again with includeSecrets if the customer wants it.",

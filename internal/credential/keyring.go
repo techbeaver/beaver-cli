@@ -12,8 +12,7 @@ const keyringService = "techbeaver-beaver-cli"
 type keyringStore struct{}
 
 func openKeyring() Store {
-	// Probing is the only reliable test: a headless Linux box has the library
-	// but no Secret Service behind it.
+	// Probing is the only reliable test: headless Linux has the library, no service.
 	if err := keyring.Set(keyringService, "__probe__", "1"); err != nil {
 		return nil
 	}

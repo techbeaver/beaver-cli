@@ -96,8 +96,7 @@ func (s *FileStore) Save(profile string, tok *Token) error {
 		return err
 	}
 	path := s.path(profile)
-	// Write via a 0600 temporary file and rename, so the credential is never
-	// briefly readable and a crash cannot leave a truncated one.
+	// Temp file then rename: never briefly readable, never left truncated.
 	tmp, err := os.CreateTemp(s.Dir, ".credentials-*")
 	if err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)

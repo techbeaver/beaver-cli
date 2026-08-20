@@ -155,9 +155,7 @@ func registerSearchTools(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		// Environment variables and connection strings are reached through their
-		// own tools, which say out loud that they are exposing a secret. Nothing
-		// should be able to walk around that through a generic fetch.
+		// Secrets have their own tools that say so; a generic fetch must not route round them.
 		item = omit(item, "envVars", "password", "connectionString", "uri", "dsn")
 		encoded, _ := json.Marshal(item)
 		return &fetchOutput{

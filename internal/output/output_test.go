@@ -74,8 +74,7 @@ func TestTableUsesPreferredColumnsWhenPresent(t *testing.T) {
 }
 
 func TestIntegersDoNotRenderInScientificNotation(t *testing.T) {
-	// JSON numbers decode as float64, and a large id printed as 1.234e+06 is
-	// a value nobody can paste back.
+	// JSON numbers decode as float64, and 1.234e+06 cannot be pasted back.
 	var buf bytes.Buffer
 	rows := []map[string]any{{"id": float64(1234567)}}
 	if err := New(&buf, Spec{Format: Value, Columns: []string{"id"}}).List(rows); err != nil {

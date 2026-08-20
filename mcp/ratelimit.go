@@ -115,10 +115,7 @@ func (l *rateLimiter) allow(key string, limit int) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	// Sweep here rather than from a goroutine. The map only holds keys seen in
-	// the last window, so it is bounded by traffic rather than by time, and a
-	// sweep on the path that creates entries cannot leak while the process is
-	// idle. Bounded again below in case one window brings a great many keys.
+	// Swept on the path that creates entries, not from a goroutine. ADR 0016.
 	if len(l.buckets) > maxRateLimitKeys {
 		for k, c := range l.buckets {
 			if now.After(c.windowEnds) {
@@ -126,9 +123,7 @@ func (l *rateLimiter) allow(key string, limit int) (bool, time.Duration) {
 			}
 		}
 		if len(l.buckets) > maxRateLimitKeys {
-			// Still too many live keys: that is a flood of distinct callers, and
-			// dropping the table costs one window of accounting rather than
-			// unbounded memory.
+			// A flood of distinct callers: drop the table, losing one window of accounting.
 			l.buckets = map[string]*counter{}
 		}
 	}

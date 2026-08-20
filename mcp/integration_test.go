@@ -114,8 +114,7 @@ func (f *fakeAPI) handler() http.Handler {
 			ok(w, []map[string]any{{"id": "proj-1", "name": "storefront", "regionCode": "eu"}})
 
 		case path == "/paas/plans":
-			// maxAppsPerProject is returned by the real API and enforced by
-			// nothing. It is here so the test can prove the tool strips it.
+			// Returned by the real API and enforced by nothing; here so the strip is proven.
 			ok(w, []map[string]any{{"id": "plan-1", "name": "starter", "monthlyPriceMinor": 500000, "maxAppsPerProject": 3}})
 
 		case path == "/paas/apps/app-1":
@@ -255,8 +254,7 @@ func TestAnUnauthenticatedClientIsChallenged(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
 	}
-	// Without this header a client cannot discover how to authenticate and the
-	// connector simply fails.
+	// Without this header a client cannot discover how to authenticate.
 	challenge := resp.Header.Get("WWW-Authenticate")
 	if !strings.Contains(challenge, "resource_metadata=") {
 		t.Fatalf("the challenge must point at the protected-resource metadata, got %q", challenge)
@@ -379,9 +377,7 @@ func TestEnvironmentVariablesAreRedactedByDefault(t *testing.T) {
 }
 
 func TestListPlansHidesTheLimitThatEnforcesNothing(t *testing.T) {
-	// The API returns maxAppsPerProject and nothing enforces it: apps are billed
-	// individually, so their count bounds itself and there is deliberately no
-	// cap. An agent shown that field would refuse to create a fourth app.
+	// Nothing enforces it, so an agent shown it would refuse to create a fourth app.
 	api := &fakeAPI{scopes: scopes.Default}
 	session, _ := connectAgent(t, api, "btk_test-token")
 
@@ -427,15 +423,12 @@ func TestCheckoutRefusesToInventAnIdempotencyKey(t *testing.T) {
 	if api.countCalls("POST", "/api/v1/paas/apps/app-1/checkout") != 0 {
 		t.Fatal("the call reached the API despite having no idempotency key")
 	}
-	// Two layers refuse it, and either is enough: the input schema marks the
-	// key required, and the handler refuses an empty one. The message names the
-	// field either way, which is what lets the model fix its own call.
+	// Two layers refuse it, and the message names the field either way.
 	if !strings.Contains(resultText(res), "idempotencyKey") {
 		t.Fatalf("the error should tell the agent what to send: %s", resultText(res))
 	}
 
-	// The second layer, reached when a client sends the field but leaves it
-	// blank rather than omitting it.
+	// The second layer: the field sent but left blank rather than omitted.
 	blank := callTool(t, session, "create_checkout_link", map[string]any{
 		"resourceType": "app", "resourceId": "app-1", "idempotencyKey": "",
 	})
@@ -498,8 +491,7 @@ func TestDeletionProceedsOnceApproved(t *testing.T) {
 	if !strings.Contains(text, "done") {
 		t.Fatalf("expected a completed status, got: %s", text)
 	}
-	// The recovery path has to be restated at the moment of deletion, not only
-	// in the preview the customer has by now scrolled past.
+	// Restated at deletion, not only in the preview already scrolled past.
 	if !strings.Contains(text, "git repository") {
 		t.Fatalf("the result must restate how to recover, got: %s", text)
 	}
@@ -608,8 +600,7 @@ func TestTheKillSwitchRefusesEverything(t *testing.T) {
 }
 
 func TestHealthCheckDoesNotDependOnTheAPI(t *testing.T) {
-	// A health check that fails when a dependency blips gets the container
-	// killed, which turns a blip into a restart loop.
+	// Failing on a dependency blip gets the container killed. ADR 0016.
 	mcpServer := httptest.NewServer(NewHandler(Config{
 		APIBaseURL: "http://definitely-not-listening.invalid",
 		PublicURL:  "https://mcp.example.test",

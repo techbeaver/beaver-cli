@@ -40,8 +40,7 @@ func NewHandler(cfg Config, logger *slog.Logger) http.Handler {
 
 	trusted, invalidProxies := parseTrustedProxies(cfg.TrustedProxies)
 	if len(invalidProxies) > 0 {
-		// A typo here silently narrows the trust list, which shows up much later
-		// as every customer sharing one rate-limit bucket. Say it out loud.
+		// A typo narrows the trust list and surfaces later as one shared bucket. ADR 0016.
 		logger.Error("MCP_TRUSTED_PROXIES has entries that are neither an IP nor a CIDR; they are ignored",
 			"entries", invalidProxies)
 	}
@@ -52,29 +51,19 @@ func NewHandler(cfg Config, logger *slog.Logger) http.Handler {
 
 	mux := http.NewServeMux()
 
-	// Liveness. Deliberately says nothing about the API behind us: a health
-	// check that fails when a dependency is briefly unreachable gets the
-	// container killed and turns a blip into a restart loop.
+	// Liveness only: failing on a dependency blip becomes a restart loop. ADR 0016.
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "service": "beaver-mcp", "version": Version})
 	})
 
-	// RFC 9728. Served at both the bare path and the resource-suffixed one,
-	// because clients differ on which they request and a discovery miss is
-	// invisible from our side: the customer just sees a connector that will not
-	// connect.
+	// RFC 9728, at both paths: clients differ and a miss is invisible from here.
 	metadata := protectedResourceMetadata(cfg)
 	for _, path := range []string{
 		ProtectedResourceMetadataPath,
 		ProtectedResourceMetadataPath + MCPPath,
 	} {
-		// Discovery is static JSON, but it is also the one thing an
-		// uncredentialed caller may legitimately fetch, so it gets the same
-		// address-keyed allowance rather than none at all. /healthz deliberately
-		// does not: the probes all arrive from the node and share a bucket, and
-		// a 429 there is read by the platform as a dead container and answered
-		// by killing it. That turns a busy minute into a restart loop.
+		// Limited rather than exempt; /healthz is the exemption. ADR 0016.
 		mux.Handle(path, withEdgeLimit(limiter, trusted, metadataHandler(metadata)))
 	}
 
@@ -86,9 +75,7 @@ func NewHandler(cfg Config, logger *slog.Logger) http.Handler {
 		return registry.Build(deps, identity)
 	}, &mcpsdk.StreamableHTTPOptions{
 		Logger: logger,
-		// The default is 4 MiB. A tool call on this surface is a handful of
-		// identifiers and some environment variables; nothing legitimate here is
-		// megabytes.
+		// Nothing legitimate here is megabytes. ADR 0016.
 		MaxRequestBodyBytes: 512 << 10,
 	})
 
@@ -125,25 +112,18 @@ func withEdgeLimit(limiter *rateLimiter, trusted []*net.IPNet, next http.Handler
 func withGuards(cfg Config, deps *Deps, logger *slog.Logger, limiter *rateLimiter, trusted []*net.IPNet, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if cfg.Disabled {
-			// The standing kill switch. An environment variable rather than a
-			// service gate because it has to work when this service cannot reach
-			// the API at all, which is exactly the situation where somebody
-			// wants to turn it off.
+			// An environment variable, so it works when the API is unreachable.
 			writeJSONError(w, http.StatusServiceUnavailable, "service_disabled",
 				"The TechBeaver MCP service is temporarily switched off. Existing apps and databases are unaffected.")
 			return
 		}
 		caller := callerIP(r, trusted)
 		token := bearerFrom(r)
-		// Attached before anything downstream runs, because the very first call
-		// this makes is the authentication call, and that one needs forwarding
-		// too: it is the request the API's failed-auth limiter counts.
+		// Before anything downstream: the auth call is what the API's limiter counts.
 		r = r.WithContext(client.WithCallerIP(r.Context(), caller))
 
 		if !limiter.cfg.Disabled {
-			// Keyed on the credential when there is one, because under a hosted
-			// MCP the address is the same for every customer and one address
-			// bucket would have them throttling each other.
+			// Keyed on the credential where there is one. ADR 0016.
 			key, limit := ipKey(caller), limiter.cfg.PerIPPerMinute
 			if token != "" {
 				key, limit = tokenKey(token), limiter.cfg.PerTokenPerMinute
@@ -154,9 +134,7 @@ func withGuards(cfg Config, deps *Deps, logger *slog.Logger, limiter *rateLimite
 			}
 		}
 
-		// Checked before authenticating, not after. A caller guessing tokens
-		// that is only told off once the API has already answered still costs us
-		// a round trip and an indexed lookup for every guess.
+		// Before authenticating, not after. ADR 0016.
 		if !limiter.cfg.Disabled && token != "" {
 			if over, retry := limiter.exceeded(failKey(caller), limiter.cfg.FailedAuthPerMinute); over {
 				tooMany(w, retry, "Too many rejected credentials from this address. Reconnect this client in the TechBeaver console.")
@@ -165,8 +143,7 @@ func withGuards(cfg Config, deps *Deps, logger *slog.Logger, limiter *rateLimite
 		}
 
 		if !originAllowed(cfg, r) {
-			// DNS rebinding. Refusing an unrecognised Origin is what stops a page
-			// in a customer's browser driving their agent's session.
+			// DNS rebinding: this stops a page in a browser driving the agent's session.
 			writeJSONError(w, http.StatusForbidden, "origin_not_allowed",
 				"This origin is not allowed to reach the TechBeaver MCP service.")
 			return
@@ -182,9 +159,7 @@ func withGuards(cfg Config, deps *Deps, logger *slog.Logger, limiter *rateLimite
 		identity, err := deps.Auth.Resolve(r.Context(), token)
 		if err != nil {
 			if errors.Is(err, ErrUnauthenticated) {
-				// Counted by address rather than by token, because a caller
-				// guessing tokens gets a fresh token bucket per guess. The
-				// budget is checked above, before the API is called at all.
+				// By address: a token-guessing caller gets a fresh token bucket per guess. ADR 0016.
 				if !limiter.cfg.Disabled {
 					limiter.record(failKey(caller))
 				}
@@ -284,9 +259,7 @@ func protectedResourceMetadata(cfg Config) map[string]any {
 
 func metadataHandler(metadata map[string]any) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Public discovery data, fetched cross-origin by clients that have no
-		// relationship with us yet, so it is readable from anywhere. It contains
-		// nothing but configuration.
+		// Public configuration, fetched cross-origin by clients with no relationship yet.
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, MCP-Protocol-Version")

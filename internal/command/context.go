@@ -101,9 +101,7 @@ func (e *Env) Authenticate(ctx context.Context) (*Session, error) {
 		if err != credential.ErrNotFound {
 			return nil, err
 		}
-		// No stored credential. On a CI runner that is not a problem to report,
-		// it is a login to perform: the job can prove who it is, so `beaver
-		// deploy` should work with no login step in the workflow at all.
+		// On a runner this is a login to perform, not a problem to report. ADR 0015.
 		if auth.WorkloadName() == "" {
 			return nil, fmt.Errorf("%w: run beaver auth login", exitcode.ErrUnauthenticated)
 		}
@@ -124,9 +122,7 @@ func (e *Env) Authenticate(ctx context.Context) (*Session, error) {
 			}
 			tok = refreshed
 		case auth.WorkloadName() != "":
-			// A workload token has no refresh token by design. Exchanging again
-			// is cheaper and safer than keeping one, and a job that ran past the
-			// hour should not fail for it.
+			// A workload token has no refresh token by design, so exchange again. ADR 0015.
 			if tok, err = e.workloadSignIn(ctx, resolved); err != nil {
 				return nil, err
 			}
@@ -172,9 +168,7 @@ func (e *Env) warnIfExpiringSoon(tok *credential.Token) {
 	if left <= 0 || left > credentialExpiryWarning {
 		return
 	}
-	// Rounded up, not truncated. Something with 2.9 days left saying "in 2
-	// days" reads as a whole day sooner than it is, and this warning exists to
-	// be believed.
+	// Rounded up: 2.9 days reported as 2 reads a whole day sooner than it is.
 	days := int(math.Ceil(left.Hours() / 24))
 	when := fmt.Sprintf("in %d days", days)
 	if days <= 1 {

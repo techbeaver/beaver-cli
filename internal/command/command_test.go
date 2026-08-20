@@ -272,8 +272,7 @@ func TestRestartIsAStopThenAStart(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAnExpiringCredentialWarnsBeforeItStopsWorking(t *testing.T) {
-	// The failure this prevents: a 90-day token that lapses overnight, in a
-	// pipeline, on a day nobody changed anything.
+	// Prevents a 90-day token lapsing overnight in a pipeline nobody touched.
 	api := newFakeAPI(t, func(_ *fakeAPI, w http.ResponseWriter, _ *http.Request) {
 		writeEnvelope(w, 200, []map[string]any{})
 	})
@@ -314,8 +313,7 @@ func TestACredentialWithPlentyOfTimeSaysNothing(t *testing.T) {
 }
 
 func TestARenewableCredentialIsNeverWarnedAbout(t *testing.T) {
-	// An OAuth access token lives an hour and renews itself. Warning about it
-	// would fire on every single command.
+	// An OAuth token renews itself, so warning would fire on every command.
 	api := newFakeAPI(t, func(_ *fakeAPI, w http.ResponseWriter, _ *http.Request) {
 		writeEnvelope(w, 200, []map[string]any{})
 	})
@@ -359,8 +357,7 @@ func TestOffARunnerAMissingCredentialStillSaysRunAuthLogin(t *testing.T) {
 }
 
 func TestOnARunnerACommandSignsItselfInWithNoLoginStep(t *testing.T) {
-	// The whole point of the feature: a workflow needs one permissions line and
-	// no login step at all.
+	// The whole point: one permissions line and no login step.
 	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer runner-secret" {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -407,8 +404,7 @@ func TestOnARunnerACommandSignsItselfInWithNoLoginStep(t *testing.T) {
 		t.Fatalf("the command did not run: %q", out.String())
 	}
 
-	// And it kept the credential, so the next step in the job does not exchange
-	// all over again.
+	// Kept, so the next step in the job does not exchange again.
 	stored, err := env.Store.Load("default")
 	if err != nil || stored.AccessToken != "btk_from_ci" {
 		t.Fatalf("the exchanged token was not stored: %v %v", stored, err)
@@ -438,8 +434,7 @@ func TestOnARunnerAnExpiredCredentialIsExchangedAgainRatherThanFailing(t *testin
 	})
 
 	env, _, _ := newTestEnv(t, api.URL)
-	// A workload token has no refresh token by design, so a job running past
-	// the hour must re-exchange rather than fail.
+	// A workload token has no refresh token, so a long job must re-exchange.
 	if err := env.Store.Save("default", &credential.Token{
 		AccessToken: "btk_stale",
 		ExpiresAt:   time.Now().Add(-time.Minute),

@@ -114,8 +114,7 @@ func TestWorkloadIsNotDetectedOffARunner(t *testing.T) {
 }
 
 func TestAJobWithoutIdTokenPermissionIsToldExactlyWhatToAdd(t *testing.T) {
-	// By a distance the most common way this fails, and the error is the only
-	// documentation anybody reads at that moment.
+	// The most common failure, and this error is the only documentation read then.
 	onGitHubActions(t, "")
 	platform := newFakePlatform(t)
 
@@ -162,8 +161,7 @@ func TestThePipelineExchangesItsIdentityForAMachineToken(t *testing.T) {
 }
 
 func TestTheAudienceIsDiscoveredFromThePlatformNotGuessed(t *testing.T) {
-	// A hardcoded audience would be wrong on any deployment but one, and would
-	// fail as "no CI identity matches" rather than as "wrong audience".
+	// A hardcoded audience is wrong on every deployment but one, and fails obscurely.
 	runner := newFakeRunner(t)
 	platform := newFakePlatform(t)
 	platform.resource = "https://mcp.some-other-deployment.test/mcp"
@@ -182,8 +180,7 @@ func TestTheAudienceIsDiscoveredFromThePlatformNotGuessed(t *testing.T) {
 }
 
 func TestTheServersRefusalReachesTheBuildLogIntact(t *testing.T) {
-	// The server's description names what did not match, which is the
-	// difference between a five-minute fix and an afternoon.
+	// The server names what did not match; swallowing it costs an afternoon.
 	runner := newFakeRunner(t)
 	platform := newFakePlatform(t)
 	platform.refuse = "invalid_grant"

@@ -95,9 +95,7 @@ func TestAForwardedAddressIsReadOnlyFromATrustedPeer(t *testing.T) {
 		t.Fatalf("a trusted peer's forwarded address was ignored: got %q", got)
 	}
 
-	// The same header from a peer we do not trust. Honouring it would let any
-	// caller pick its own rate-limit bucket, and would put an attacker-chosen
-	// string into the API's request log.
+	// From an untrusted peer: honouring it lets a caller pick its own bucket.
 	direct := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	direct.RemoteAddr = "198.51.100.4:34567"
 	direct.Header.Set(client.HeaderCFConnectingIP, "203.0.113.7")
@@ -111,8 +109,7 @@ func TestAForwardedAddressThatIsNotAnAddressIsRefused(t *testing.T) {
 
 	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	r.RemoteAddr = "10.42.0.9:34567"
-	// This value becomes a rate-limit key and is forwarded to the API, so a
-	// caller must not be able to put arbitrary text in it.
+	// This becomes a limiter key and reaches the API, so never arbitrary text.
 	r.Header.Set(client.HeaderCFConnectingIP, "not-an-address, 1.2.3.4")
 	if got := callerIP(r, trusted); got != "10.42.0.9" {
 		t.Fatalf("arbitrary text was accepted as a caller address: got %q", got)
@@ -168,8 +165,7 @@ func TestAnUncredentialedFloodIsRefusedWithoutCallingTheAPI(t *testing.T) {
 		statuses = append(statuses, w.Code)
 	}
 
-	// The first two are refused for having no credential; the rest are refused
-	// for volume. Before the edge limiter existed this was free forever.
+	// First two for having no credential, the rest for volume. Once free forever.
 	if statuses[0] != http.StatusUnauthorized || statuses[1] != http.StatusUnauthorized {
 		t.Fatalf("expected the first two to be 401, got %v", statuses)
 	}
@@ -194,9 +190,7 @@ func TestGuessedTokensAreCutOffByAddress(t *testing.T) {
 	handler := NewHandler(Config{
 		APIBaseURL: api.URL,
 		PublicURL:  "https://mcp.example.com",
-		// Generous per token, tight on failures: a caller inventing tokens gets
-		// a fresh token bucket per guess, so the failure counter is the only
-		// thing that can stop it.
+		// Generous per token, tight on failures. ADR 0016.
 		RateLimit: RateLimitConfig{PerTokenPerMinute: 1000, PerIPPerMinute: 1000, FailedAuthPerMinute: 3},
 	}, testLogger())
 
@@ -227,9 +221,7 @@ func TestHealthIsNeverRateLimited(t *testing.T) {
 		RateLimit:  RateLimitConfig{PerIPPerMinute: 1},
 	}, testLogger())
 
-	// The probes all arrive from the node and share a bucket. A 429 here is read
-	// by the platform as a dead container and answered by killing it, which
-	// turns a busy minute into a restart loop.
+	// Probes share the node's bucket, and a 429 here reads as a dead container.
 	for i := 0; i < 10; i++ {
 		r := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 		r.RemoteAddr = "10.42.0.1:5678"
@@ -329,9 +321,7 @@ func TestTheCallerAddressIsForwardedToTheAPI(t *testing.T) {
 
 	select {
 	case forwarded := <-seen:
-		// Without this the API sees this pod for the whole customer base: the
-		// request log is useless for agent traffic and every customer's failed
-		// authentication shares one bucket.
+		// Without this the API sees this pod for the whole customer base. ADR 0016.
 		if forwarded != "203.0.113.7" {
 			t.Fatalf("the API was told the caller was %q rather than the real address", forwarded)
 		}

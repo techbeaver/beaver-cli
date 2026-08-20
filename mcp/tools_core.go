@@ -251,10 +251,7 @@ func registerPlanTools(r *Registry) {
 			return nil, err
 		}
 		for i := range items {
-			// maxAppsPerProject is returned by the API but enforced by nothing:
-			// apps are billed individually, so the count bounds itself and there
-			// is deliberately no cap. Passing it to a model would have an agent
-			// refuse to create a fourth app on a limit that does not exist.
+			// Enforced by nothing, so a model shown it would refuse to create a fourth app.
 			items[i] = omit(items[i], "maxAppsPerProject")
 		}
 		return &ListResult{

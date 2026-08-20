@@ -26,3 +26,4 @@ of its remaining claims to trust.
 | [0013](0013-scope-vocabulary.md) | The scope vocabulary, and its two invariants | Accepted |
 | [0014](0014-http-only-api-client.md) | The client speaks HTTP only, and re-implements no rule | Accepted |
 | [0015](0015-ci-workload-identity.md) | A CI pipeline signs in with its own identity, not with a stored secret | Accepted |
+| [0016](0016-the-mcp-edge-limits-before-it-authenticates.md) | The MCP edge limits before it authenticates, and keys on the credential | Accepted |

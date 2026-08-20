@@ -93,9 +93,7 @@ func peerHost(remoteAddr string) string {
 func callerIP(r *http.Request, trusted []*net.IPNet) string {
 	if trustedPeer(r.RemoteAddr, trusted) {
 		if forwarded := strings.TrimSpace(r.Header.Get(client.HeaderCFConnectingIP)); forwarded != "" {
-			// Only an address, never a list, and never something unparseable:
-			// this value is about to become a rate-limit key and is forwarded to
-			// the API, so a caller must not be able to put arbitrary text in it.
+			// This becomes a limiter key and reaches the API, so never arbitrary text.
 			if ip := net.ParseIP(forwarded); ip != nil {
 				return ip.String()
 			}
@@ -104,7 +102,6 @@ func callerIP(r *http.Request, trusted []*net.IPNet) string {
 	if host := peerHost(r.RemoteAddr); host != "" {
 		return host
 	}
-	// Naming it makes "we could not tell" visible in a limiter's key space, in
-	// a way an empty string never is.
+	// Named, so "we could not tell" is visible in a key space; empty is not.
 	return "unknown-caller"
 }

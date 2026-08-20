@@ -109,10 +109,7 @@ func (a *Authenticator) Resolve(ctx context.Context, token string) (*Identity, e
 	if err != nil {
 		var apiErr *client.APIError
 		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden) {
-			// Negative answers are deliberately not cached. Caching them would
-			// mean a customer who has just reconnected a client still cannot use
-			// it, and would give a caller guessing tokens a free way to keep the
-			// cache warm.
+			// Negative answers are never cached. ADR 0016.
 			return nil, ErrUnauthenticated
 		}
 		return nil, err
@@ -125,10 +122,7 @@ func (a *Authenticator) Resolve(ctx context.Context, token string) (*Identity, e
 
 	a.mu.Lock()
 	a.cache[key] = cachedIdentity{identity: identity, expires: time.Now().Add(identityCacheTTL)}
-	// The cache is bounded by wiping it wholesale rather than by evicting
-	// least-recently-used entries. With a ten second TTL the map only grows to
-	// the number of distinct tokens seen in ten seconds, and a simple bound that
-	// is obviously correct beats a clever one here.
+	// Bounded by wiping wholesale; an obviously correct bound beats a clever one.
 	if len(a.cache) > 4096 {
 		a.cache = map[string]cachedIdentity{}
 	}

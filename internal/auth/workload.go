@@ -204,9 +204,7 @@ func exchangeWorkloadToken(ctx context.Context, opts WorkloadOptions, audience, 
 	}
 
 	if body.AccessToken == "" {
-		// The server's description names what did not match: the repository, the
-		// ref, the audience. Passing it through unchanged is the difference
-		// between a five-minute fix and an afternoon.
+		// The server names what did not match, so it is passed through unchanged.
 		message := body.Description
 		if message == "" {
 			message = "this pipeline is not bound to any TechBeaver account. " +
@@ -230,7 +228,6 @@ func exchangeWorkloadToken(ctx context.Context, opts WorkloadOptions, audience, 
 	if body.Scope != "" {
 		tok.Scopes = strings.Fields(body.Scope)
 	}
-	// No refresh token comes back, and none is wanted: the pipeline holds the
-	// thing that mints tokens, so it can always exchange again.
+	// No refresh token, by design: the pipeline can always exchange again.
 	return tok, nil
 }

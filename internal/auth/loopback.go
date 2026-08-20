@@ -62,8 +62,7 @@ func Login(ctx context.Context, opts LoginOptions) (*credential.Token, error) {
 		opts.Prompt = func(string) {}
 	}
 
-	// Bind the loopback address explicitly. Never all interfaces, which would
-	// put a login callback on the network.
+	// Loopback explicitly. All interfaces would put the callback on the network.
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("opening a local port for the login callback: %w", err)

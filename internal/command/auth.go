@@ -61,10 +61,7 @@ func newAuthLoginCommand(env *Env) *cobra.Command {
 			var tok *credential.Token
 			switch {
 			case useCI || (!useToken && !noBrowser && auth.WorkloadName() != ""):
-				// Auto-selected rather than flagged, because a workflow author
-				// should not have to know this flag exists. --ci forces it so a
-				// misconfigured runner fails loudly instead of silently opening a
-				// browser nobody will ever see.
+				// Auto-selected so a workflow author need not know of it; --ci forces it.
 				fmt.Fprintf(env.Err, "Signing in with this %s job's own identity.\n", auth.WorkloadName())
 				tok, err = auth.LoginWorkload(cmd.Context(), auth.WorkloadOptions{
 					Host:   resolved.Host,

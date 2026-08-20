@@ -69,9 +69,7 @@ func LoginDevice(ctx context.Context, opts DeviceOptions) (*credential.Token, er
 		case tok != nil:
 			return tok, nil
 		case retry > 0:
-			// The server asked us to back off. Honouring slow_down is required:
-			// a client that ignores it is indistinguishable from an attacker
-			// guessing the user code.
+			// Ignoring slow_down is indistinguishable from guessing the user code.
 			interval += retry
 		}
 	}
