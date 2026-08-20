@@ -393,11 +393,11 @@ func TestOnARunnerACommandSignsItselfInWithNoLoginStep(t *testing.T) {
 
 	var exchanged bool
 	api := newFakeAPI(t, func(_ *fakeAPI, w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/.well-known/oauth-protected-resource":
+		switch r.URL.Path {
+		case "/.well-known/oauth-protected-resource":
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"resource": "https://mcp.test/mcp"})
-		case r.URL.Path == "/api/v1/oauth/token":
+		case "/api/v1/oauth/token":
 			exchanged = true
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{

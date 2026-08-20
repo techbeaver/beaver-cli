@@ -33,7 +33,7 @@ type searchInput struct {
 }
 
 type searchResult struct {
-	Id    string `json:"id" jsonschema:"an identifier to pass to fetch"`
+	ID    string `json:"id" jsonschema:"an identifier to pass to fetch"`
 	Title string `json:"title" jsonschema:"a human readable name"`
 	Type  string `json:"type" jsonschema:"what kind of thing this is"`
 	Text  string `json:"text" jsonschema:"a one line description"`
@@ -45,11 +45,11 @@ type searchOutput struct {
 }
 
 type fetchInput struct {
-	Id string `json:"id" jsonschema:"an id returned by search, of the form type:identifier"`
+	ID string `json:"id" jsonschema:"an id returned by search, of the form type:identifier"`
 }
 
 type fetchOutput struct {
-	Id       string         `json:"id" jsonschema:"the id that was fetched"`
+	ID       string         `json:"id" jsonschema:"the id that was fetched"`
 	Title    string         `json:"title" jsonschema:"a human readable name"`
 	Text     string         `json:"text" jsonschema:"the full record, as JSON text"`
 	Metadata map[string]any `json:"metadata" jsonschema:"the record's fields"`
@@ -74,7 +74,7 @@ func registerSearchTools(r *Registry) {
 			projectID := pick(project, "id")
 			if matches(needle, project) {
 				results = append(results, searchResult{
-					Id: "project:" + projectID, Type: "project",
+					ID: "project:" + projectID, Type: "project",
 					Title: pick(project, "name", "id"),
 					Text:  fmt.Sprintf("Project in %s.", pick(project, "regionCode")),
 				})
@@ -87,7 +87,7 @@ func registerSearchTools(r *Registry) {
 				for _, app := range apps {
 					if matches(needle, app) {
 						results = append(results, searchResult{
-							Id: "app:" + pick(app, "id"), Type: "app",
+							ID: "app:" + pick(app, "id"), Type: "app",
 							Title: pick(app, "name", "id"),
 							Text:  fmt.Sprintf("App in project %s, currently %s.", pick(project, "name"), pick(app, "status")),
 						})
@@ -99,7 +99,7 @@ func registerSearchTools(r *Registry) {
 				for _, db := range databases {
 					if matches(needle, db) {
 						results = append(results, searchResult{
-							Id: "database:" + pick(db, "id"), Type: "database",
+							ID: "database:" + pick(db, "id"), Type: "database",
 							Title: pick(db, "name", "id"),
 							Text:  fmt.Sprintf("Managed database in project %s, currently %s.", pick(project, "name"), pick(db, "status")),
 						})
@@ -113,7 +113,7 @@ func registerSearchTools(r *Registry) {
 			for _, invoice := range invoices {
 				if matches(needle, invoice) {
 					results = append(results, searchResult{
-						Id: "invoice:" + pick(invoice, "id"), Type: "invoice",
+						ID: "invoice:" + pick(invoice, "id"), Type: "invoice",
 						Title: pick(invoice, "invoiceNumber", "id"),
 						Text:  fmt.Sprintf("Invoice, currently %s.", pick(invoice, "status")),
 					})
@@ -134,9 +134,9 @@ func registerSearchTools(r *Registry) {
 		ReadOnly: true, Idempotent: true,
 		Description: "Returns the full record for an id from search. The same data the matching get tool returns, and subject to the same permissions.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in fetchInput) (*fetchOutput, error) {
-		kind, id, found := strings.Cut(in.Id, ":")
+		kind, id, found := strings.Cut(in.ID, ":")
 		if !found || id == "" {
-			return nil, fmt.Errorf("id has to look like type:identifier, for example app:0f1e..., not %q", in.Id)
+			return nil, fmt.Errorf("id has to look like type:identifier, for example app:0f1e..., not %q", in.ID)
 		}
 		var path string
 		switch kind {
@@ -159,7 +159,7 @@ func registerSearchTools(r *Registry) {
 		item = omit(item, "envVars", "password", "connectionString", "uri", "dsn")
 		encoded, _ := json.Marshal(item)
 		return &fetchOutput{
-			Id:       in.Id,
+			ID:       in.ID,
 			Title:    pick(item, "name", "invoiceNumber", "id"),
 			Text:     string(encoded),
 			Metadata: item,

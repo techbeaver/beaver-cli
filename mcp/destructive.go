@@ -48,7 +48,7 @@ type destructiveSpec struct {
 
 	Action       string
 	ResourceType string
-	ResourceId   string
+	ResourceID   string
 	ResourceName string
 
 	// Preview is what the human is shown, assembled from live data rather than
@@ -104,7 +104,7 @@ func performDestructive(ctx context.Context, deps *Deps, call *Call, confirmatio
 }
 
 type pendingConfirmation struct {
-	Id           string `json:"id"`
+	ID           string `json:"id"`
 	Status       string `json:"status"`
 	ApprovalURL  string `json:"approvalUrl"`
 	Token        string `json:"confirmationToken"`
@@ -122,7 +122,7 @@ func createConfirmation(ctx context.Context, deps *Deps, call *Call, spec destru
 			"path":         spec.Path,
 			"action":       spec.Action,
 			"resourceType": spec.ResourceType,
-			"resourceId":   spec.ResourceId,
+			"resourceId":   spec.ResourceID,
 			"resourceName": spec.ResourceName,
 			"summary":      spec.Preview,
 			"recoveryNote": spec.RecoveryNote,
@@ -200,7 +200,7 @@ func askAndWait(ctx context.Context, deps *Deps, call *Call, pending *pendingCon
 	}
 
 	// Only the approval landing counts: a client can answer "accept" on its own.
-	return waitForApproval(ctx, deps, call, pending.Id)
+	return waitForApproval(ctx, deps, call, pending.ID)
 }
 
 // waitForApproval polls until the account owner has approved, or time runs out.
@@ -239,7 +239,7 @@ func waitForApproval(ctx context.Context, deps *Deps, call *Call, confirmationID
 func describeResource(spec destructiveSpec) string {
 	name := spec.ResourceName
 	if name == "" {
-		name = spec.ResourceId
+		name = spec.ResourceID
 	}
 	return fmt.Sprintf("%s %s", spec.ResourceType, name)
 }

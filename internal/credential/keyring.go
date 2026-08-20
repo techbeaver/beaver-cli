@@ -23,7 +23,7 @@ func openKeyring() Store {
 func (s *keyringStore) Describe() string { return "your system keychain" }
 
 func (s *keyringStore) Save(profile string, tok *Token) error {
-	encoded, err := json.Marshal(tok)
+	encoded, err := json.Marshal(tok) //nolint:gosec // G117: serialising the credential is what a credential store is for
 	if err != nil {
 		return err
 	}

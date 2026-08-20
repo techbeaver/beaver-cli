@@ -98,14 +98,13 @@ func getCommand(env *Env, spec getSpec) *cobra.Command {
 
 // actionSpec is a POST or PATCH that changes something without destroying it.
 type actionSpec struct {
-	use     string
-	short   string
-	method  string
-	args    cobra.PositionalArgs
-	path    func(*Session, []string) (string, error)
-	body    func([]string) any
-	flags   func(*cobra.Command)
-	message string
+	use    string
+	short  string
+	method string
+	args   cobra.PositionalArgs
+	path   func(*Session, []string) (string, error)
+	body   func([]string) any
+	flags  func(*cobra.Command)
 }
 
 func actionCommand(env *Env, spec actionSpec) *cobra.Command {

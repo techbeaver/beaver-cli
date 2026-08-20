@@ -25,7 +25,7 @@ import (
 // that changes these strings are wrong and have to change with it.
 
 type deleteAppInput struct {
-	AppId             string `json:"appId" jsonschema:"the app's id"`
+	AppID             string `json:"appId" jsonschema:"the app's id"`
 	ConfirmationToken string `json:"confirmationToken,omitempty" jsonschema:"leave this out on the first call to get a preview and an approval link; set it once the account owner has approved"`
 }
 
@@ -37,10 +37,10 @@ func registerDestructiveTools(r *Registry) {
 		Destructive: true,
 		Description: "Deletes an application. Call it WITHOUT a confirmation token first: you get a preview of what goes and a link the account owner must open in their browser. It cannot be completed any other way. If the customer only wants the app to stop running and stop costing them, use stop_app instead: that is reversible and needs no approval.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in deleteAppInput) (*DestructiveResult, error) {
-		path := "/paas/apps/" + url.PathEscape(in.AppId)
+		path := "/paas/apps/" + url.PathEscape(in.AppID)
 		spec := destructiveSpec{
 			Method: http.MethodDelete, Path: path,
-			Action: "delete", ResourceType: "app", ResourceId: in.AppId,
+			Action: "delete", ResourceType: "app", ResourceID: in.AppID,
 			RecoveryNote: "The app record is soft deleted and its running workload is torn down. The source stays in the customer's own git repository, so the app can be recreated and redeployed from it. Any custom domain attached to it stops resolving here.",
 		}
 		if in.ConfirmationToken == "" {
@@ -71,13 +71,13 @@ func registerDestructiveTools(r *Registry) {
 		Destructive: true,
 		Description: "Deletes a managed PostgreSQL instance. Call it WITHOUT a confirmation token first to get a preview and an approval link the account owner must open. Read list_backups first and tell the customer what exists to restore from, especially if the answer is nothing.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
-		InstanceId        string `json:"instanceId" jsonschema:"the managed database's id"`
+		InstanceID        string `json:"instanceId" jsonschema:"the managed database's id"`
 		ConfirmationToken string `json:"confirmationToken,omitempty" jsonschema:"leave this out on the first call to get a preview and an approval link; set it once the account owner has approved"`
 	}) (*DestructiveResult, error) {
-		path := "/dbaas/instances/" + url.PathEscape(in.InstanceId)
+		path := "/dbaas/instances/" + url.PathEscape(in.InstanceID)
 		spec := destructiveSpec{
 			Method: http.MethodDelete, Path: path,
-			Action: "delete", ResourceType: "managed database", ResourceId: in.InstanceId,
+			Action: "delete", ResourceType: "managed database", ResourceID: in.InstanceID,
 			RecoveryNote: "The database cluster is torn down and stops accepting connections immediately. Its backups are retained for a period after deletion, and restoring from them needs TechBeaver support: it is not something this connection or the console can do. Anything not in a backup is gone.",
 		}
 		if in.ConfirmationToken == "" {
@@ -117,23 +117,23 @@ func registerDestructiveTools(r *Registry) {
 		Destructive: true,
 		Description: "Drops one logical database inside a managed instance, and everything in it. The instance itself and its other databases are untouched. Needs the account owner's approval in a browser like every other deletion.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
-		InstanceId        string `json:"instanceId" jsonschema:"the managed database's id"`
-		DatabaseId        string `json:"databaseId" jsonschema:"the logical database's id, from list_logical_databases"`
+		InstanceID        string `json:"instanceId" jsonschema:"the managed database's id"`
+		DatabaseID        string `json:"databaseId" jsonschema:"the logical database's id, from list_logical_databases"`
 		ConfirmationToken string `json:"confirmationToken,omitempty" jsonschema:"leave this out on the first call to get a preview and an approval link"`
 	}) (*DestructiveResult, error) {
-		path := "/dbaas/instances/" + url.PathEscape(in.InstanceId) + "/databases/" + url.PathEscape(in.DatabaseId)
+		path := "/dbaas/instances/" + url.PathEscape(in.InstanceID) + "/databases/" + url.PathEscape(in.DatabaseID)
 		spec := destructiveSpec{
 			Method: http.MethodDelete, Path: path,
-			Action: "delete", ResourceType: "logical database", ResourceId: in.DatabaseId,
+			Action: "delete", ResourceType: "logical database", ResourceID: in.DatabaseID,
 			RecoveryNote: "The database and everything in it is dropped. It can only come back from a backup of the whole instance, which needs TechBeaver support.",
 		}
 		if in.ConfirmationToken == "" {
-			databases, err := apiList(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceId)+"/databases", nil)
+			databases, err := apiList(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceID)+"/databases", nil)
 			if err != nil {
 				return nil, err
 			}
 			for _, db := range databases {
-				if pick(db, "id") == in.DatabaseId {
+				if pick(db, "id") == in.DatabaseID {
 					spec.ResourceName = pick(db, "name", "id")
 					spec.Preview = map[string]any{
 						"database":     pick(db, "name", "id"),
@@ -145,7 +145,7 @@ func registerDestructiveTools(r *Registry) {
 				}
 			}
 			if spec.Preview == nil {
-				return nil, fmt.Errorf("no logical database with id %q on that instance. Call list_logical_databases and use an id from it", in.DatabaseId)
+				return nil, fmt.Errorf("no logical database with id %q on that instance. Call list_logical_databases and use an id from it", in.DatabaseID)
 			}
 			spec.ElicitMessage = fmt.Sprintf("Drop the database %q?", spec.ResourceName)
 		}
@@ -159,13 +159,13 @@ func registerDestructiveTools(r *Registry) {
 		Destructive: true,
 		Description: "Deletes a project. This is the widest destructive action on this surface: a project holds apps and managed databases, so deleting it takes them with it. Needs both write and destroy permission, and the account owner's approval in a browser.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
-		ProjectId         string `json:"projectId" jsonschema:"the project's id"`
+		ProjectID         string `json:"projectId" jsonschema:"the project's id"`
 		ConfirmationToken string `json:"confirmationToken,omitempty" jsonschema:"leave this out on the first call to get a preview and an approval link"`
 	}) (*DestructiveResult, error) {
-		path := "/paas/projects/" + url.PathEscape(in.ProjectId)
+		path := "/paas/projects/" + url.PathEscape(in.ProjectID)
 		spec := destructiveSpec{
 			Method: http.MethodDelete, Path: path,
-			Action: "delete", ResourceType: "project", ResourceId: in.ProjectId,
+			Action: "delete", ResourceType: "project", ResourceID: in.ProjectID,
 			RecoveryNote: "Everything inside the project goes with it. Application source stays in the customer's git repositories; managed database contents do not, beyond whatever backups exist.",
 		}
 		if in.ConfirmationToken == "" {
@@ -174,7 +174,7 @@ func registerDestructiveTools(r *Registry) {
 				return nil, err
 			}
 			apps, _ := apiList(ctx, deps, call, path+"/apps", nil)
-			databases, _ := apiList(ctx, deps, call, "/dbaas/projects/"+url.PathEscape(in.ProjectId)+"/instances", nil)
+			databases, _ := apiList(ctx, deps, call, "/dbaas/projects/"+url.PathEscape(in.ProjectID)+"/instances", nil)
 			spec.ResourceName = pick(project, "name", "id")
 			spec.Preview = map[string]any{
 				"project":           pick(project, "name", "id"),
@@ -195,23 +195,23 @@ func registerDestructiveTools(r *Registry) {
 		Destructive: true,
 		Description: "Detaches a customer's own domain from an app. The site stops answering on that address immediately, which is why it needs approval. The domain itself, at the registrar, is untouched.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
-		AppId             string `json:"appId" jsonschema:"the app's id"`
-		DomainId          string `json:"domainId" jsonschema:"the domain's id, from list_custom_domains"`
+		AppID             string `json:"appId" jsonschema:"the app's id"`
+		DomainID          string `json:"domainId" jsonschema:"the domain's id, from list_custom_domains"`
 		ConfirmationToken string `json:"confirmationToken,omitempty" jsonschema:"leave this out on the first call to get a preview and an approval link"`
 	}) (*DestructiveResult, error) {
-		path := "/paas/apps/" + url.PathEscape(in.AppId) + "/custom-domains/" + url.PathEscape(in.DomainId)
+		path := "/paas/apps/" + url.PathEscape(in.AppID) + "/custom-domains/" + url.PathEscape(in.DomainID)
 		spec := destructiveSpec{
 			Method: http.MethodDelete, Path: path,
-			Action: "remove", ResourceType: "custom domain", ResourceId: in.DomainId,
+			Action: "remove", ResourceType: "custom domain", ResourceID: in.DomainID,
 			RecoveryNote: "The domain can be added back with add_custom_domain, but its DNS records have to be set up and verified again, so the site is unreachable on that address until they are.",
 		}
 		if in.ConfirmationToken == "" {
-			domains, err := apiList(ctx, deps, call, "/paas/apps/"+url.PathEscape(in.AppId)+"/custom-domains", nil)
+			domains, err := apiList(ctx, deps, call, "/paas/apps/"+url.PathEscape(in.AppID)+"/custom-domains", nil)
 			if err != nil {
 				return nil, err
 			}
 			for _, d := range domains {
-				if pick(d, "id") == in.DomainId {
+				if pick(d, "id") == in.DomainID {
 					spec.ResourceName = pick(d, "domain", "name", "id")
 					spec.Preview = map[string]any{
 						"domain":   spec.ResourceName,
@@ -222,7 +222,7 @@ func registerDestructiveTools(r *Registry) {
 				}
 			}
 			if spec.Preview == nil {
-				return nil, fmt.Errorf("no custom domain with id %q on that app. Call list_custom_domains and use an id from it", in.DomainId)
+				return nil, fmt.Errorf("no custom domain with id %q on that app. Call list_custom_domains and use an id from it", in.DomainID)
 			}
 			spec.ElicitMessage = fmt.Sprintf("Take %s off this app?", spec.ResourceName)
 		}
@@ -236,12 +236,12 @@ func registerDestructiveTools(r *Registry) {
 		Destructive: true,
 		Description: "Recovers a managed database from its backups. Filed with the destructive tools deliberately: a restore overwrites what is there now, which is a deletion wearing a friendlier name. Needs the account owner's approval like any other. Read get_restore_preview first so they know what point they are going back to.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
-		InstanceId        string `json:"instanceId" jsonschema:"the managed database to recover from"`
+		InstanceID        string `json:"instanceId" jsonschema:"the managed database to recover from"`
 		Name              string `json:"name,omitempty" jsonschema:"a name for the recovered instance"`
 		TargetTime        string `json:"targetTime,omitempty" jsonschema:"an RFC 3339 timestamp to recover to; omitted means the latest available point"`
 		ConfirmationToken string `json:"confirmationToken,omitempty" jsonschema:"leave this out on the first call to get a preview and an approval link"`
 	}) (*DestructiveResult, error) {
-		path := "/dbaas/instances/" + url.PathEscape(in.InstanceId) + "/restore"
+		path := "/dbaas/instances/" + url.PathEscape(in.InstanceID) + "/restore"
 		body := map[string]any{}
 		putIfSet(body, "name", in.Name)
 		if strings.TrimSpace(in.TargetTime) != "" {
@@ -252,15 +252,15 @@ func registerDestructiveTools(r *Registry) {
 		}
 		spec := destructiveSpec{
 			Method: http.MethodPost, Path: path, Body: body,
-			Action: "restore", ResourceType: "managed database", ResourceId: in.InstanceId,
+			Action: "restore", ResourceType: "managed database", ResourceID: in.InstanceID,
 			RecoveryNote: "A restore recovers to a point in the past. Anything written after that point is not in the recovered data. Take a backup first if the current state matters at all.",
 		}
 		if in.ConfirmationToken == "" {
-			preview, err := apiGet(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceId)+"/restore-preview", nil)
+			preview, err := apiGet(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceID)+"/restore-preview", nil)
 			if err != nil {
 				return nil, err
 			}
-			instance, _ := apiGet(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceId), nil)
+			instance, _ := apiGet(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceID), nil)
 			spec.ResourceName = pick(instance, "name", "id")
 			spec.Preview = map[string]any{
 				"database":      spec.ResourceName,
@@ -279,8 +279,8 @@ func registerDestructiveTools(r *Registry) {
 		Scopes:   []string{scopes.DBaaSRead},
 		ReadOnly: true, Idempotent: true,
 		Description: "What a restore could recover and how far back it can go. Reads only, changes nothing, and is the right thing to look at before proposing a restore.",
-	}, func(ctx context.Context, deps *Deps, call *Call, in instanceIdInput) (*ObjectResult, error) {
-		item, err := apiGet(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceId)+"/restore-preview", nil)
+	}, func(ctx context.Context, deps *Deps, call *Call, in instanceIDInput) (*ObjectResult, error) {
+		item, err := apiGet(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceID)+"/restore-preview", nil)
 		if err != nil {
 			return nil, err
 		}
@@ -297,9 +297,9 @@ func registerCleanupTool(r *Registry) {
 		ReadOnly: true, Idempotent: true,
 		Description: "A dry run. Looks across a project, or the whole account, and lists what LOOKS unused: apps that are stopped or never deployed, provisioning that failed. It removes nothing and it cannot remove anything. Show the customer the list, let them choose, and then call the relevant delete tool for each one they pick, which will still need their approval in a browser.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
-		ProjectId string `json:"projectId,omitempty" jsonschema:"limit the scan to one project; omitted means every project on the account"`
+		ProjectID string `json:"projectId,omitempty" jsonschema:"limit the scan to one project; omitted means every project on the account"`
 	}) (*ListResult, error) {
-		projects, err := scopeProjects(ctx, deps, call, in.ProjectId)
+		projects, err := scopeProjects(ctx, deps, call, in.ProjectID)
 		if err != nil {
 			return nil, err
 		}

@@ -237,17 +237,22 @@ func postToken(ctx context.Context, host string, form url.Values) (*credential.T
 // OpenBrowser opens a URL in the customer's default browser. The URL is passed
 // as an argument to a fixed command, never through a shell.
 func OpenBrowser(target string) error {
-	if _, err := url.ParseRequestURI(target); err != nil {
+	parsed, err := url.ParseRequestURI(target)
+	if err != nil {
 		return fmt.Errorf("refusing to open a malformed URL")
+	}
+	// Scheme, not just shape: file: and a private-use scheme both parse.
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return fmt.Errorf("refusing to open a %s URL", parsed.Scheme)
 	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", target)
+		cmd = exec.Command("open", target) //nolint:gosec // fixed command, http(s) URL as one argument, never a shell
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target) //nolint:gosec // as above
 	default:
-		cmd = exec.Command("xdg-open", target)
+		cmd = exec.Command("xdg-open", target) //nolint:gosec // as above
 	}
 	return cmd.Start()
 }

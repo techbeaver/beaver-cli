@@ -33,8 +33,8 @@ func registerBillingTools(r *Registry) {
 		Description: "What a plan change would actually cost, worked out live: proration, tax and any discount included. This is the ONLY correct answer to what will this cost. Prices in a plan listing are before tax and before proration, and the tax rate is a configurable record rather than a constant, so never do this arithmetic yourself.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
 		ResourceType string `json:"resourceType" jsonschema:"app or database"`
-		ResourceId   string `json:"resourceId" jsonschema:"the app's or managed database's id"`
-		PlanId       string `json:"planId" jsonschema:"the plan being priced, from list_plans or list_database_plans"`
+		ResourceID   string `json:"resourceId" jsonschema:"the app's or managed database's id"`
+		PlanID       string `json:"planId" jsonschema:"the plan being priced, from list_plans or list_database_plans"`
 		BillingCycle string `json:"billingCycle,omitempty" jsonschema:"monthly or yearly"`
 		DiscountCode string `json:"discountCode,omitempty" jsonschema:"a promotion code to include in the quote"`
 	}) (*ObjectResult, error) {
@@ -42,11 +42,11 @@ func registerBillingTools(r *Registry) {
 		body := map[string]any{}
 		switch strings.ToLower(in.ResourceType) {
 		case "app", "paas", "application":
-			path = "/paas/apps/" + url.PathEscape(in.ResourceId) + "/upgrade/quote"
-			body["paasPlanId"] = in.PlanId
+			path = "/paas/apps/" + url.PathEscape(in.ResourceID) + "/upgrade/quote"
+			body["paasPlanId"] = in.PlanID
 		case "database", "dbaas", "db":
-			path = "/dbaas/instances/" + url.PathEscape(in.ResourceId) + "/upgrade/quote"
-			body["dbaasPlanId"] = in.PlanId
+			path = "/dbaas/instances/" + url.PathEscape(in.ResourceID) + "/upgrade/quote"
+			body["dbaasPlanId"] = in.PlanID
 		default:
 			return nil, fmt.Errorf("resourceType has to be app or database, not %q", in.ResourceType)
 		}
@@ -91,9 +91,9 @@ func registerBillingTools(r *Registry) {
 		ReadOnly: true, Idempotent: true,
 		Description: "One invoice in full, including its line items and what is still owed. Also how to check whether a payment link has been paid: poll this rather than asking the customer repeatedly.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
-		InvoiceId string `json:"invoiceId" jsonschema:"the invoice's id"`
+		InvoiceID string `json:"invoiceId" jsonschema:"the invoice's id"`
 	}) (*ObjectResult, error) {
-		item, err := apiGet(ctx, deps, call, "/billing/invoices/"+url.PathEscape(in.InvoiceId), nil)
+		item, err := apiGet(ctx, deps, call, "/billing/invoices/"+url.PathEscape(in.InvoiceID), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -126,7 +126,7 @@ func registerBillingTools(r *Registry) {
 		Scopes:      []string{scopes.BillingCheckout},
 		Description: "Produces a hosted payment page for an unpaid invoice. It does NOT pay it: hand the link to the customer and say plainly that only they can complete the payment. Poll get_invoice afterwards to see whether they did.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
-		InvoiceId      string `json:"invoiceId" jsonschema:"the invoice to pay"`
+		InvoiceID      string `json:"invoiceId" jsonschema:"the invoice to pay"`
 		DiscountCode   string `json:"discountCode,omitempty" jsonschema:"a promotion code to apply"`
 		IdempotencyKey string `json:"idempotencyKey" jsonschema:"a unique string you generate once; reuse exactly the same value if you retry, or the customer may be charged twice"`
 	}) (*CheckoutResult, error) {
@@ -136,7 +136,7 @@ func registerBillingTools(r *Registry) {
 		body := map[string]any{}
 		putIfSet(body, "discountCode", in.DiscountCode)
 		env, err := apiSend(ctx, deps, call, http.MethodPost,
-			"/billing/invoices/"+url.PathEscape(in.InvoiceId)+"/pay", body, idempotencyHeaders(in.IdempotencyKey))
+			"/billing/invoices/"+url.PathEscape(in.InvoiceID)+"/pay", body, idempotencyHeaders(in.IdempotencyKey))
 		if err != nil {
 			return nil, err
 		}
@@ -151,7 +151,7 @@ func registerBillingTools(r *Registry) {
 		Description: "Produces a hosted payment page for an app or managed database that is waiting to be paid for. It does NOT pay: hand the link over and tell the customer only they can complete it. If the total comes to nothing, because of a discount or credit, the response says so and there is no link to give.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
 		ResourceType   string `json:"resourceType" jsonschema:"app or database"`
-		ResourceId     string `json:"resourceId" jsonschema:"the app's or managed database's id"`
+		ResourceID     string `json:"resourceId" jsonschema:"the app's or managed database's id"`
 		DiscountCode   string `json:"discountCode,omitempty" jsonschema:"a promotion code to apply"`
 		IdempotencyKey string `json:"idempotencyKey" jsonschema:"a unique string you generate once; reuse exactly the same value if you retry, or the customer may be charged twice"`
 	}) (*CheckoutResult, error) {
@@ -161,9 +161,9 @@ func registerBillingTools(r *Registry) {
 		var path string
 		switch strings.ToLower(in.ResourceType) {
 		case "app", "paas", "application":
-			path = "/paas/apps/" + url.PathEscape(in.ResourceId) + "/checkout"
+			path = "/paas/apps/" + url.PathEscape(in.ResourceID) + "/checkout"
 		case "database", "dbaas", "db":
-			path = "/dbaas/instances/" + url.PathEscape(in.ResourceId) + "/checkout"
+			path = "/dbaas/instances/" + url.PathEscape(in.ResourceID) + "/checkout"
 		default:
 			return nil, fmt.Errorf("resourceType has to be app or database, not %q", in.ResourceType)
 		}

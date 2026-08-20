@@ -130,16 +130,6 @@ func TestTrustedProxyParsingReportsWhatItCouldNotRead(t *testing.T) {
 
 // stubAPI answers /mcp/whoami however the test asks it to, so the guard chain
 // can be driven without a database.
-func stubAPI(t *testing.T, status int, body string) *httptest.Server {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write([]byte(body))
-	}))
-	t.Cleanup(server.Close)
-	return server
-}
 
 func TestAnUncredentialedFloodIsRefusedWithoutCallingTheAPI(t *testing.T) {
 	var apiCalls int

@@ -53,8 +53,7 @@ var githubActions = workloadSource{
 		endpoint := os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL")
 		bearer := os.Getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
 		if endpoint == "" || bearer == "" {
-			return "", fmt.Errorf("this job cannot request an identity token. Add this to the job or the workflow:\n\n" +
-				"  permissions:\n    id-token: write\n    contents: read\n")
+			return "", fmt.Errorf("this job cannot request an identity token: add `permissions: id-token: write` to the job or the workflow")
 		}
 
 		u, err := url.Parse(endpoint)

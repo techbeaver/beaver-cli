@@ -18,8 +18,8 @@ import (
 // deliberately: it overwrites data, which is a deletion wearing a friendlier
 // name.
 
-type instanceIdInput struct {
-	InstanceId string `json:"instanceId" jsonschema:"the managed database's id, from list_databases"`
+type instanceIDInput struct {
+	InstanceID string `json:"instanceId" jsonschema:"the managed database's id, from list_databases"`
 }
 
 func registerDatabaseTools(r *Registry) {
@@ -29,8 +29,8 @@ func registerDatabaseTools(r *Registry) {
 		Scopes:   []string{scopes.DBaaSRead},
 		ReadOnly: true, Idempotent: true,
 		Description: "The managed PostgreSQL instances in a project.",
-	}, func(ctx context.Context, deps *Deps, call *Call, in projectIdInput) (*ListResult, error) {
-		items, err := apiList(ctx, deps, call, "/dbaas/projects/"+url.PathEscape(in.ProjectId)+"/instances", nil)
+	}, func(ctx context.Context, deps *Deps, call *Call, in projectIDInput) (*ListResult, error) {
+		items, err := apiList(ctx, deps, call, "/dbaas/projects/"+url.PathEscape(in.ProjectID)+"/instances", nil)
 		if err != nil {
 			return nil, err
 		}
@@ -43,8 +43,8 @@ func registerDatabaseTools(r *Registry) {
 		Scopes:   []string{scopes.DBaaSRead},
 		ReadOnly: true, Idempotent: true,
 		Description: "One managed database's status, plan, version and endpoint.",
-	}, func(ctx context.Context, deps *Deps, call *Call, in instanceIdInput) (*ObjectResult, error) {
-		item, err := apiGet(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceId), nil)
+	}, func(ctx context.Context, deps *Deps, call *Call, in instanceIDInput) (*ObjectResult, error) {
+		item, err := apiGet(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceID), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -60,9 +60,9 @@ func registerDatabaseTools(r *Registry) {
 		Scopes:      []string{scopes.DBaaSWrite},
 		Description: "Provisions a managed PostgreSQL instance in a project. Call list_database_plans first and use a plan id from it. Provisioning is asynchronous and can take minutes: poll get_database rather than creating a second one.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
-		ProjectId      string `json:"projectId" jsonschema:"the project to create it in"`
+		ProjectID      string `json:"projectId" jsonschema:"the project to create it in"`
 		Name           string `json:"name" jsonschema:"a name for the database instance"`
-		PlanId         string `json:"planId" jsonschema:"which plan to buy, from list_database_plans"`
+		PlanID         string `json:"planId" jsonschema:"which plan to buy, from list_database_plans"`
 		BillingCycle   string `json:"billingCycle,omitempty" jsonschema:"monthly or yearly"`
 		DatabaseName   string `json:"databaseName,omitempty" jsonschema:"the name of the first database inside the instance"`
 		Username       string `json:"username,omitempty" jsonschema:"the login role that will own it"`
@@ -71,13 +71,13 @@ func registerDatabaseTools(r *Registry) {
 		if err := requireIdempotencyKey(in.IdempotencyKey); err != nil {
 			return nil, err
 		}
-		body := map[string]any{"name": in.Name, "dbaasPlanId": in.PlanId}
+		body := map[string]any{"name": in.Name, "dbaasPlanId": in.PlanID}
 		putIfSet(body, "billingCycle", in.BillingCycle)
 		putIfSet(body, "databaseName", in.DatabaseName)
 		putIfSet(body, "username", in.Username)
 
 		env, err := apiSend(ctx, deps, call, http.MethodPost,
-			"/dbaas/projects/"+url.PathEscape(in.ProjectId)+"/instances", body, idempotencyHeaders(in.IdempotencyKey))
+			"/dbaas/projects/"+url.PathEscape(in.ProjectID)+"/instances", body, idempotencyHeaders(in.IdempotencyKey))
 		if err != nil {
 			return nil, err
 		}
@@ -96,12 +96,12 @@ func registerDatabaseTools(r *Registry) {
 		ReadOnly: true, Idempotent: true,
 		Description: "How to connect to a logical database: host, port, database name and user. The password is withheld unless you explicitly ask for it. Ask only when the customer asked for the password itself, and tell them it will appear in this conversation.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
-		InstanceId     string `json:"instanceId" jsonschema:"the managed database's id"`
-		DatabaseId     string `json:"databaseId" jsonschema:"the logical database's id, from list_logical_databases"`
+		InstanceID     string `json:"instanceId" jsonschema:"the managed database's id"`
+		DatabaseID     string `json:"databaseId" jsonschema:"the logical database's id, from list_logical_databases"`
 		IncludeSecrets bool   `json:"includeSecrets,omitempty" jsonschema:"set true ONLY if the customer asked for the password; it will appear in this conversation"`
 	}) (*ObjectResult, error) {
 		item, err := apiGet(ctx, deps, call,
-			"/dbaas/instances/"+url.PathEscape(in.InstanceId)+"/databases/"+url.PathEscape(in.DatabaseId)+"/connection-info", nil)
+			"/dbaas/instances/"+url.PathEscape(in.InstanceID)+"/databases/"+url.PathEscape(in.DatabaseID)+"/connection-info", nil)
 		if err != nil {
 			return nil, err
 		}
@@ -125,8 +125,8 @@ func registerDatabaseTools(r *Registry) {
 		Scopes:   []string{scopes.DBaaSRead},
 		ReadOnly: true, Idempotent: true,
 		Description: "The logical databases inside one managed PostgreSQL instance.",
-	}, func(ctx context.Context, deps *Deps, call *Call, in instanceIdInput) (*ListResult, error) {
-		items, err := apiList(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceId)+"/databases", nil)
+	}, func(ctx context.Context, deps *Deps, call *Call, in instanceIDInput) (*ListResult, error) {
+		items, err := apiList(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceID)+"/databases", nil)
 		if err != nil {
 			return nil, err
 		}
@@ -139,14 +139,14 @@ func registerDatabaseTools(r *Registry) {
 		Scopes:      []string{scopes.DBaaSWrite},
 		Description: "Creates a new logical database inside an existing managed instance, with its own owner role.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
-		InstanceId string `json:"instanceId" jsonschema:"the managed database's id"`
+		InstanceID string `json:"instanceId" jsonschema:"the managed database's id"`
 		Name       string `json:"name" jsonschema:"the database name"`
 		OwnerRole  string `json:"ownerRole,omitempty" jsonschema:"the role that should own it; one is derived if omitted"`
 	}) (*ActionResult, error) {
 		body := map[string]any{"name": in.Name}
 		putIfSet(body, "ownerRole", in.OwnerRole)
 		env, err := apiSend(ctx, deps, call, http.MethodPost,
-			"/dbaas/instances/"+url.PathEscape(in.InstanceId)+"/databases", body, nil)
+			"/dbaas/instances/"+url.PathEscape(in.InstanceID)+"/databases", body, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -160,8 +160,8 @@ func registerDatabaseTools(r *Registry) {
 		Scopes:   []string{scopes.DBaaSRead},
 		ReadOnly: true, Idempotent: true,
 		Description: "The login roles on a managed database instance. Passwords are never returned here, by the API, for any caller.",
-	}, func(ctx context.Context, deps *Deps, call *Call, in instanceIdInput) (*ListResult, error) {
-		items, err := apiList(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceId)+"/roles", nil)
+	}, func(ctx context.Context, deps *Deps, call *Call, in instanceIDInput) (*ListResult, error) {
+		items, err := apiList(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceID)+"/roles", nil)
 		if err != nil {
 			return nil, err
 		}
@@ -174,12 +174,12 @@ func registerDatabaseTools(r *Registry) {
 		Scopes:      []string{scopes.DBaaSWrite},
 		Description: "Creates a login role. The password is returned once, in this response, and cannot be read back afterwards, so pass it to the customer immediately and tell them it is in the conversation.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
-		InstanceId string `json:"instanceId" jsonschema:"the managed database's id"`
+		InstanceID string `json:"instanceId" jsonschema:"the managed database's id"`
 		Name       string `json:"name" jsonschema:"the role name"`
 		Password   string `json:"password" jsonschema:"the password for the role, at least 8 characters"`
 	}) (*ActionResult, error) {
 		env, err := apiSend(ctx, deps, call, http.MethodPost,
-			"/dbaas/instances/"+url.PathEscape(in.InstanceId)+"/roles",
+			"/dbaas/instances/"+url.PathEscape(in.InstanceID)+"/roles",
 			map[string]any{"name": in.Name, "password": in.Password}, nil)
 		if err != nil {
 			return nil, err
@@ -198,14 +198,14 @@ func registerDatabaseTools(r *Registry) {
 		Scopes:      []string{scopes.DBaaSWrite},
 		Description: "Gives a role read, write or full access to one logical database.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
-		InstanceId string `json:"instanceId" jsonschema:"the managed database's id"`
-		RoleId     string `json:"roleId" jsonschema:"the role's id, from list_db_roles"`
-		DatabaseId string `json:"databaseId" jsonschema:"the logical database's id"`
+		InstanceID string `json:"instanceId" jsonschema:"the managed database's id"`
+		RoleID     string `json:"roleId" jsonschema:"the role's id, from list_db_roles"`
+		DatabaseID string `json:"databaseId" jsonschema:"the logical database's id"`
 		Level      string `json:"level" jsonschema:"read, write or all"`
 	}) (*ActionResult, error) {
 		env, err := apiSend(ctx, deps, call, http.MethodPost,
-			"/dbaas/instances/"+url.PathEscape(in.InstanceId)+"/roles/"+url.PathEscape(in.RoleId)+"/grants",
-			map[string]any{"databaseId": in.DatabaseId, "level": in.Level}, nil)
+			"/dbaas/instances/"+url.PathEscape(in.InstanceID)+"/roles/"+url.PathEscape(in.RoleID)+"/grants",
+			map[string]any{"databaseId": in.DatabaseID, "level": in.Level}, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -219,8 +219,8 @@ func registerDatabaseTools(r *Registry) {
 		Scopes:   []string{scopes.DBaaSRead},
 		ReadOnly: true, Idempotent: true,
 		Description: "The backups taken of a managed database. Read this before proposing anything destructive, so you can tell the customer what actually exists to restore from rather than assuming something does.",
-	}, func(ctx context.Context, deps *Deps, call *Call, in instanceIdInput) (*ListResult, error) {
-		items, err := apiList(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceId)+"/backups", nil)
+	}, func(ctx context.Context, deps *Deps, call *Call, in instanceIDInput) (*ListResult, error) {
+		items, err := apiList(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceID)+"/backups", nil)
 		if err != nil {
 			return nil, err
 		}
@@ -236,9 +236,9 @@ func registerDatabaseTools(r *Registry) {
 		Title:       "Take a backup",
 		Scopes:      []string{scopes.DBaaSWrite},
 		Description: "Starts an on-demand backup. Worth doing before any risky change, and it is the one thing on this surface that only makes recovery more likely.",
-	}, func(ctx context.Context, deps *Deps, call *Call, in instanceIdInput) (*ActionResult, error) {
+	}, func(ctx context.Context, deps *Deps, call *Call, in instanceIDInput) (*ActionResult, error) {
 		env, err := apiSend(ctx, deps, call, http.MethodPost,
-			"/dbaas/instances/"+url.PathEscape(in.InstanceId)+"/backups", map[string]any{}, nil)
+			"/dbaas/instances/"+url.PathEscape(in.InstanceID)+"/backups", map[string]any{}, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -252,8 +252,8 @@ func registerDatabaseTools(r *Registry) {
 		Scopes:   []string{scopes.DBaaSRead},
 		ReadOnly: true, Idempotent: true,
 		Description: "Which addresses may connect to a managed database. The usual explanation for a connection that times out from somewhere new.",
-	}, func(ctx context.Context, deps *Deps, call *Call, in instanceIdInput) (*ListResult, error) {
-		items, err := apiList(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceId)+"/ip-allowlist", nil)
+	}, func(ctx context.Context, deps *Deps, call *Call, in instanceIDInput) (*ListResult, error) {
+		items, err := apiList(ctx, deps, call, "/dbaas/instances/"+url.PathEscape(in.InstanceID)+"/ip-allowlist", nil)
 		if err != nil {
 			return nil, err
 		}
@@ -266,14 +266,14 @@ func registerDatabaseTools(r *Registry) {
 		Scopes:      []string{scopes.DBaaSWrite},
 		Description: "Lets an address or range connect to a managed database. Prefer the narrowest range that works: an allowlist of 0.0.0.0/0 is not an allowlist.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
-		InstanceId string `json:"instanceId" jsonschema:"the managed database's id"`
+		InstanceID string `json:"instanceId" jsonschema:"the managed database's id"`
 		CIDR       string `json:"cidr" jsonschema:"an address or CIDR range, for example 203.0.113.4 or 203.0.113.0/24"`
 		Label      string `json:"label,omitempty" jsonschema:"a note about what this is, so it can be recognised later"`
 	}) (*ActionResult, error) {
 		body := map[string]any{"cidr": in.CIDR}
 		putIfSet(body, "label", in.Label)
 		env, err := apiSend(ctx, deps, call, http.MethodPost,
-			"/dbaas/instances/"+url.PathEscape(in.InstanceId)+"/ip-allowlist", body, nil)
+			"/dbaas/instances/"+url.PathEscape(in.InstanceID)+"/ip-allowlist", body, nil)
 		if err != nil {
 			return nil, err
 		}

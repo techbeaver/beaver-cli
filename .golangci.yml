@@ -23,11 +23,21 @@ linters:
     gosec:
       excludes:
         - G104
+    errcheck:
+      # A failed write to stderr is not actionable: the message that would report
+      # it goes to the same place. Checking these would add noise that says
+      # nothing. Real output goes through internal/output, which does check.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
 
   exclusions:
     rules:
+      # bodyclose cannot see through the serve() helper in loopback_test.go,
+      # which closes the response with t.Cleanup.
       - path: _test\.go
-        linters: [gosec, errcheck]
+        linters: [gosec, errcheck, bodyclose]
 
 formatters:
   enable:

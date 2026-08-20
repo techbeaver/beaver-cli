@@ -69,9 +69,9 @@ type emptyInput struct{}
 
 type whoamiOutput struct {
 	Summary        string   `json:"summary" jsonschema:"one line describing who this connection acts for"`
-	UserId         string   `json:"userId" jsonschema:"the TechBeaver account this connection acts for"`
+	UserID         string   `json:"userId" jsonschema:"the TechBeaver account this connection acts for"`
 	Email          string   `json:"email" jsonschema:"the account owner's email address"`
-	OrganisationId string   `json:"organisationId,omitempty" jsonschema:"the organisation the account belongs to, if any"`
+	OrganisationID string   `json:"organisationId,omitempty" jsonschema:"the organisation the account belongs to, if any"`
 	ClientName     string   `json:"clientName,omitempty" jsonschema:"which AI client the customer connected"`
 	Scopes         []string `json:"scopes" jsonschema:"exactly what this connection was granted; anything not listed here you cannot do"`
 	CanDelete      bool     `json:"canDelete" jsonschema:"whether this connection may ask to delete things at all; even when true, every deletion still needs the account owner to approve it in a browser"`
@@ -94,9 +94,9 @@ func registerIdentityTools(r *Registry) {
 		}
 		return &whoamiOutput{
 			Summary:        fmt.Sprintf("Acting for %s.", name),
-			UserId:         id.UserID,
+			UserID:         id.UserID,
 			Email:          id.Email,
-			OrganisationId: id.OrganisationID,
+			OrganisationID: id.OrganisationID,
 			ClientName:     id.ClientName,
 			Scopes:         id.Scopes,
 			CanDelete:      id.Has(scopes.PaaSDestroy) || id.Has(scopes.DBaaSDestroy),
@@ -146,8 +146,8 @@ type createProjectInput struct {
 	RegionCode  string `json:"regionCode" jsonschema:"which region to host it in; call list_regions first and use a code from there, never one you remember"`
 }
 
-type projectIdInput struct {
-	ProjectId string `json:"projectId" jsonschema:"the project's id, from list_projects"`
+type projectIDInput struct {
+	ProjectID string `json:"projectId" jsonschema:"the project's id, from list_projects"`
 }
 
 func registerProjectTools(r *Registry) {
@@ -191,8 +191,8 @@ func registerProjectTools(r *Registry) {
 		Scopes:   []string{scopes.ProjectsRead},
 		ReadOnly: true, Idempotent: true,
 		Description: "One project's details: its region, when it was created, and who owns it. Use list_projects first if you do not already have an id.",
-	}, func(ctx context.Context, deps *Deps, call *Call, in projectIdInput) (*ObjectResult, error) {
-		item, err := apiGet(ctx, deps, call, "/paas/projects/"+url.PathEscape(in.ProjectId), nil)
+	}, func(ctx context.Context, deps *Deps, call *Call, in projectIDInput) (*ObjectResult, error) {
+		item, err := apiGet(ctx, deps, call, "/paas/projects/"+url.PathEscape(in.ProjectID), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -226,8 +226,8 @@ func registerProjectTools(r *Registry) {
 		Scopes:   []string{scopes.PaaSRead},
 		ReadOnly: true, Idempotent: true,
 		Description: "The applications deployed in one project.",
-	}, func(ctx context.Context, deps *Deps, call *Call, in projectIdInput) (*ListResult, error) {
-		items, err := apiList(ctx, deps, call, "/paas/projects/"+url.PathEscape(in.ProjectId)+"/apps", nil)
+	}, func(ctx context.Context, deps *Deps, call *Call, in projectIDInput) (*ListResult, error) {
+		items, err := apiList(ctx, deps, call, "/paas/projects/"+url.PathEscape(in.ProjectID)+"/apps", nil)
 		if err != nil {
 			return nil, err
 		}

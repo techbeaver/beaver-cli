@@ -88,10 +88,11 @@ func (s *FileStore) Save(profile string, tok *Token) error {
 	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
 		return fmt.Errorf("creating %s: %w", s.Dir, err)
 	}
-	if err := os.Chmod(s.Dir, 0o700); err != nil {
+	// A directory needs its execute bit, so 0700 is the tightest usable mode.
+	if err := os.Chmod(s.Dir, 0o700); err != nil { //nolint:gosec // G302 expects 0600, which would make the directory unusable
 		return fmt.Errorf("securing %s: %w", s.Dir, err)
 	}
-	encoded, err := json.Marshal(tok)
+	encoded, err := json.Marshal(tok) //nolint:gosec // G117: serialising the credential is what a credential store is for
 	if err != nil {
 		return err
 	}
