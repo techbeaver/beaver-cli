@@ -66,24 +66,17 @@ binary_signs:
       - --yes
     output: true
 
-brews:
-  - name: beaver
-    repository:
-      owner: techbeaver
-      name: homebrew-tap
-    homepage: https://techbeaver.io
-    description: The TechBeaver command line interface
-    license: Apache-2.0
-    skip_upload: auto
-
-scoops:
-  - repository:
-      owner: techbeaver
-      name: scoop-bucket
-    homepage: https://techbeaver.io
-    description: The TechBeaver command line interface
-    license: Apache-2.0
-    skip_upload: auto
+# Homebrew and Scoop are not published yet, on purpose.
+#
+# Both need a repository that does not exist (techbeaver/homebrew-tap,
+# techbeaver/scoop-bucket) and a token that can push to it, which the release
+# job's GITHUB_TOKEN cannot do because it is scoped to this repository. Left
+# configured, goreleaser fails the whole release at the upload step, after the
+# binaries are already built and published.
+#
+# To enable: create the two repositories, add a PAT with write access as a
+# secret, and add it to the release job's env. `brews` is deprecated in
+# goreleaser v2, so use homebrew_casks when it comes back.
 
 release:
   draft: false
