@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"time"
 
 	"github.com/techbeaver/beaver-cli/client"
 	"github.com/techbeaver/beaver-cli/internal/auth"
@@ -96,25 +98,44 @@ func (e *Env) Authenticate(ctx context.Context) (*Session, error) {
 
 	tok, err := e.Store.Load(resolved.Profile)
 	if err != nil {
-		if err == credential.ErrNotFound {
+		if err != credential.ErrNotFound {
+			return nil, err
+		}
+		// No stored credential. On a CI runner that is not a problem to report,
+		// it is a login to perform: the job can prove who it is, so `beaver
+		// deploy` should work with no login step in the workflow at all.
+		if auth.WorkloadName() == "" {
 			return nil, fmt.Errorf("%w: run beaver auth login", exitcode.ErrUnauthenticated)
 		}
-		return nil, err
+		if tok, err = e.workloadSignIn(ctx, resolved); err != nil {
+			return nil, err
+		}
 	}
 
 	if tok.Expired() {
-		if tok.RefreshToken == "" {
+		switch {
+		case tok.RefreshToken != "":
+			refreshed, err := auth.Refresh(ctx, resolved.Host, tok.RefreshToken)
+			if err != nil {
+				return nil, fmt.Errorf("%w: your session could not be renewed, run beaver auth login", exitcode.ErrUnauthenticated)
+			}
+			if err := e.Store.Save(resolved.Profile, refreshed); err != nil {
+				return nil, err
+			}
+			tok = refreshed
+		case auth.WorkloadName() != "":
+			// A workload token has no refresh token by design. Exchanging again
+			// is cheaper and safer than keeping one, and a job that ran past the
+			// hour should not fail for it.
+			if tok, err = e.workloadSignIn(ctx, resolved); err != nil {
+				return nil, err
+			}
+		default:
 			return nil, fmt.Errorf("%w: your session has expired, run beaver auth login", exitcode.ErrUnauthenticated)
 		}
-		refreshed, err := auth.Refresh(ctx, resolved.Host, tok.RefreshToken)
-		if err != nil {
-			return nil, fmt.Errorf("%w: your session could not be renewed, run beaver auth login", exitcode.ErrUnauthenticated)
-		}
-		if err := e.Store.Save(resolved.Profile, refreshed); err != nil {
-			return nil, err
-		}
-		tok = refreshed
 	}
+
+	e.warnIfExpiringSoon(tok)
 
 	return &Session{
 		Client:   client.New(resolved.Host, "beaver/"+Version),
@@ -122,6 +143,63 @@ func (e *Env) Authenticate(ctx context.Context) (*Session, error) {
 		Profile:  resolved.Profile,
 		Resolved: resolved,
 	}, nil
+}
+
+// credentialExpiryWarning is how long before a credential lapses this client
+// starts saying so.
+//
+// Two weeks is chosen against the failure it exists to prevent: a personal
+// token capped at 90 days that expires overnight, in a pipeline, on a day
+// nobody touched anything. Two weeks is long enough to cover a holiday and
+// short enough that the warning still means something when it appears.
+const credentialExpiryWarning = 14 * 24 * time.Hour
+
+// warnIfExpiringSoon says something before a credential that cannot renew
+// itself runs out.
+//
+// Deliberately silent for the two credential types that renew: an OAuth login
+// has a refresh token, and a CI job can exchange again whenever it likes.
+// Warning about those would be noise, and noise is how a real warning gets
+// ignored.
+func (e *Env) warnIfExpiringSoon(tok *credential.Token) {
+	if tok == nil || tok.ExpiresAt.IsZero() || tok.RefreshToken != "" {
+		return
+	}
+	if auth.WorkloadName() != "" {
+		return
+	}
+	left := time.Until(tok.ExpiresAt)
+	if left <= 0 || left > credentialExpiryWarning {
+		return
+	}
+	// Rounded up, not truncated. Something with 2.9 days left saying "in 2
+	// days" reads as a whole day sooner than it is, and this warning exists to
+	// be believed.
+	days := int(math.Ceil(left.Hours() / 24))
+	when := fmt.Sprintf("in %d days", days)
+	if days <= 1 {
+		when = "within a day"
+	}
+	fmt.Fprintf(e.Err, "Warning: this credential expires %s (%s). Mint a new one under Portal, AI and CLI, or move this pipeline to a CI identity so it needs no token at all.\n",
+		when, tok.ExpiresAt.UTC().Format("2006-01-02 15:04 UTC"))
+}
+
+// workloadSignIn exchanges the CI runner's identity token for a machine token.
+//
+// The result is stored when the store will take it, because a job runs several
+// commands and each one exchanging again is waste. A store that refuses is not
+// an error: the token in hand still works for this command, and a runner is
+// discarded at the end of the job anyway.
+func (e *Env) workloadSignIn(ctx context.Context, resolved *config.Resolved) (*credential.Token, error) {
+	name := auth.WorkloadName()
+	fmt.Fprintf(e.Err, "Signing in with this %s job's own identity.\n", name)
+
+	tok, err := auth.LoginWorkload(ctx, auth.WorkloadOptions{Host: resolved.Host})
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", exitcode.ErrUnauthenticated, err)
+	}
+	_ = e.Store.Save(resolved.Profile, tok)
+	return tok, nil
 }
 
 // NewEnv builds the default environment.

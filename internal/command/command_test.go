@@ -266,3 +266,195 @@ func TestRestartIsAStopThenAStart(t *testing.T) {
 		t.Fatal("start must come after stop")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Credential expiry and CI sign-in
+// ---------------------------------------------------------------------------
+
+func TestAnExpiringCredentialWarnsBeforeItStopsWorking(t *testing.T) {
+	// The failure this prevents: a 90-day token that lapses overnight, in a
+	// pipeline, on a day nobody changed anything.
+	api := newFakeAPI(t, func(_ *fakeAPI, w http.ResponseWriter, _ *http.Request) {
+		writeEnvelope(w, 200, []map[string]any{})
+	})
+	env, _, errBuf := newTestEnv(t, api.URL)
+	if err := env.Store.Save("default", &credential.Token{
+		AccessToken: "btk_test",
+		ExpiresAt:   time.Now().Add(3 * 24 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := run(t, env, "projects", "list"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errBuf.String(), "expires in 3 days") {
+		t.Fatalf("no warning was printed: %q", errBuf.String())
+	}
+}
+
+func TestACredentialWithPlentyOfTimeSaysNothing(t *testing.T) {
+	api := newFakeAPI(t, func(_ *fakeAPI, w http.ResponseWriter, _ *http.Request) {
+		writeEnvelope(w, 200, []map[string]any{})
+	})
+	env, _, errBuf := newTestEnv(t, api.URL)
+	if err := env.Store.Save("default", &credential.Token{
+		AccessToken: "btk_test",
+		ExpiresAt:   time.Now().Add(60 * 24 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := run(t, env, "projects", "list"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(errBuf.String(), "expires") {
+		t.Fatalf("a warning 60 days out is noise, and noise is how real warnings get ignored: %q", errBuf.String())
+	}
+}
+
+func TestARenewableCredentialIsNeverWarnedAbout(t *testing.T) {
+	// An OAuth access token lives an hour and renews itself. Warning about it
+	// would fire on every single command.
+	api := newFakeAPI(t, func(_ *fakeAPI, w http.ResponseWriter, _ *http.Request) {
+		writeEnvelope(w, 200, []map[string]any{})
+	})
+	env, _, errBuf := newTestEnv(t, api.URL)
+	if err := env.Store.Save("default", &credential.Token{
+		AccessToken:  "btk_test",
+		RefreshToken: "brt_test",
+		ExpiresAt:    time.Now().Add(30 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := run(t, env, "projects", "list"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(errBuf.String(), "expires") {
+		t.Fatalf("a renewable credential was warned about: %q", errBuf.String())
+	}
+}
+
+func TestOffARunnerAMissingCredentialStillSaysRunAuthLogin(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	api := newFakeAPI(t, func(_ *fakeAPI, w http.ResponseWriter, _ *http.Request) {
+		writeEnvelope(w, 200, []map[string]any{})
+	})
+	env, _, _ := newTestEnv(t, api.URL)
+	if err := env.Store.Delete("default"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := run(t, env, "projects", "list")
+	if err == nil {
+		t.Fatal("a command with no credential reported success")
+	}
+	if exitcode.From(err) != exitcode.Unauthenticated {
+		t.Fatalf("exit code was %d, want %d", exitcode.From(err), exitcode.Unauthenticated)
+	}
+	if !strings.Contains(err.Error(), "beaver auth login") {
+		t.Fatalf("the error must say what to do: %v", err)
+	}
+}
+
+func TestOnARunnerACommandSignsItselfInWithNoLoginStep(t *testing.T) {
+	// The whole point of the feature: a workflow needs one permissions line and
+	// no login step at all.
+	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer runner-secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"value": "the.id.token"})
+	}))
+	t.Cleanup(runner.Close)
+
+	var exchanged bool
+	api := newFakeAPI(t, func(_ *fakeAPI, w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/.well-known/oauth-protected-resource":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"resource": "https://mcp.test/mcp"})
+		case r.URL.Path == "/api/v1/oauth/token":
+			exchanged = true
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "btk_from_ci", "token_type": "Bearer", "expires_in": 3600,
+				"scope": "paas:read",
+			})
+		default:
+			writeEnvelope(w, 200, []map[string]any{{"id": "p1", "name": "site"}})
+		}
+	})
+
+	env, out, _ := newTestEnv(t, api.URL)
+	if err := env.Store.Delete("default"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", runner.URL+"?api-version=2.0")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-secret")
+
+	if err := run(t, env, "projects", "list"); err != nil {
+		t.Fatalf("a CI job with a bound identity could not run a command: %v", err)
+	}
+	if !exchanged {
+		t.Fatal("no token exchange happened")
+	}
+	if !strings.Contains(out.String(), "site") {
+		t.Fatalf("the command did not run: %q", out.String())
+	}
+
+	// And it kept the credential, so the next step in the job does not exchange
+	// all over again.
+	stored, err := env.Store.Load("default")
+	if err != nil || stored.AccessToken != "btk_from_ci" {
+		t.Fatalf("the exchanged token was not stored: %v %v", stored, err)
+	}
+}
+
+func TestOnARunnerAnExpiredCredentialIsExchangedAgainRatherThanFailing(t *testing.T) {
+	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"value": "the.id.token"})
+	}))
+	t.Cleanup(runner.Close)
+
+	api := newFakeAPI(t, func(_ *fakeAPI, w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-protected-resource":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"resource": "https://mcp.test/mcp"})
+		case "/api/v1/oauth/token":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "btk_fresh", "token_type": "Bearer", "expires_in": 3600,
+			})
+		default:
+			writeEnvelope(w, 200, []map[string]any{})
+		}
+	})
+
+	env, _, _ := newTestEnv(t, api.URL)
+	// A workload token has no refresh token by design, so a job running past
+	// the hour must re-exchange rather than fail.
+	if err := env.Store.Save("default", &credential.Token{
+		AccessToken: "btk_stale",
+		ExpiresAt:   time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", runner.URL+"?api-version=2.0")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-secret")
+
+	if err := run(t, env, "projects", "list"); err != nil {
+		t.Fatalf("a long job failed instead of re-exchanging: %v", err)
+	}
+	stored, err := env.Store.Load("default")
+	if err != nil || stored.AccessToken != "btk_fresh" {
+		t.Fatalf("the stale token was not replaced: %v %v", stored, err)
+	}
+}
