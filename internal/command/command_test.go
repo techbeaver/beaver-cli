@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,28 @@ import (
 	"github.com/techbeaver/beaver-cli/internal/credential"
 	"github.com/techbeaver/beaver-cli/internal/exitcode"
 )
+
+// TestMain neutralises the CI runner's own environment for every test here.
+//
+// This package reads GITHUB_ACTIONS to decide whether a command may sign itself
+// in with the runner's identity, and this repository's tests run on GitHub
+// Actions, where that variable is set. Two tests passed locally and failed on
+// the first push because of it: one expected an expiry warning that is
+// deliberately suppressed on a runner, and one expected an expired credential
+// to ask for a login rather than exchange again.
+//
+// Clearing it here makes "not on a runner" the default for every test, present
+// and future, and the tests that want a runner say so with t.Setenv.
+func TestMain(m *testing.M) {
+	for _, key := range []string{
+		"GITHUB_ACTIONS",
+		"ACTIONS_ID_TOKEN_REQUEST_URL",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+	} {
+		_ = os.Unsetenv(key)
+	}
+	os.Exit(m.Run())
+}
 
 // fakeAPI records what the CLI sent and replies with envelopes.
 type fakeAPI struct {

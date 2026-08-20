@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,21 @@ import (
 // The point of testing this end to end rather than in pieces: the failure this
 // feature has to avoid is a workflow that asks for the wrong audience, and the
 // audience travels through three hops before anything checks it.
+
+// TestMain clears the runner's own environment, so a test that wants to be on a
+// runner has to say so. See the note in internal/command/command_test.go: this
+// repository's CI is GitHub Actions, which is exactly what this package
+// detects.
+func TestMain(m *testing.M) {
+	for _, key := range []string{
+		"GITHUB_ACTIONS",
+		"ACTIONS_ID_TOKEN_REQUEST_URL",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+	} {
+		_ = os.Unsetenv(key)
+	}
+	os.Exit(m.Run())
+}
 
 type fakePlatform struct {
 	server *httptest.Server
