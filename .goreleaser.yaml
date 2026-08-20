@@ -54,8 +54,15 @@ notarize:
 
 # Keyless signing: the signature is bound to the GitHub Actions identity that
 # produced it, so a customer verifies provenance without us holding a key.
-binary_signs:
+#
+# Signs checksums.txt rather than each binary. Signing the binaries directly
+# names every signature after the binary, and the binary is called `beaver` on
+# all five targets — so five artifacts collide on one asset name and the upload
+# fails after everything is already built. checksums.txt covers every archive,
+# so one signature over it proves the lot.
+signs:
   - cmd: cosign
+    artifacts: checksum
     signature: "${artifact}.sig"
     certificate: "${artifact}.pem"
     args:
@@ -90,19 +97,22 @@ release:
 
     ## Verify what you downloaded
 
-    Every binary is signed with cosign, keyless, so the signature is bound to
-    the GitHub Actions run that built it rather than to a key we hold.
+    checksums.txt is signed with cosign, keyless, so the signature is bound to
+    the GitHub Actions run that built it rather than to a key we hold. Verify
+    the checksum file, then check your archive against it.
 
     ```sh
     cosign verify-blob \
-      --certificate beaver_{{ .Version }}_linux_amd64.pem \
-      --signature   beaver_{{ .Version }}_linux_amd64.sig \
+      --certificate checksums.txt.pem \
+      --signature   checksums.txt.sig \
       --certificate-identity-regexp 'https://github.com/techbeaver/beaver-cli' \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-      beaver_{{ .Version }}_linux_amd64
+      checksums.txt
+
+    sha256sum -c checksums.txt --ignore-missing
     ```
 
-    Checksums are in `checksums.txt`.
+    install.sh already checks the archive against checksums.txt for you.
 
 changelog:
   sort: asc
