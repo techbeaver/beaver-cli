@@ -43,11 +43,14 @@ func TestToolNamesAreStable(t *testing.T) {
 		"list_regions": true, "list_projects": true, "get_project": true, "create_project": true,
 		"list_plans": true, "list_database_plans": true,
 		"list_apps": true, "get_app": true, "create_app": true, "deploy_app": true, "rollback_app": true,
+		"list_deployments": true, "set_root_directory": true,
+		"check_repo_access": true, "list_git_connections": true,
 		"stop_app": true, "start_app": true,
 		"get_env_vars": true, "set_env_vars": true, "set_app_port": true, "set_start_command": true,
 		"list_custom_domains": true, "add_custom_domain": true, "verify_custom_domain": true,
 		"list_databases": true, "get_database": true, "create_database": true, "get_connection_info": true,
 		"list_logical_databases": true, "create_logical_database": true,
+		"list_db_extensions": true, "enable_db_extension": true, "disable_db_extension": true,
 		"list_db_roles": true, "create_db_role": true, "grant_db_role": true,
 		"list_backups": true, "create_backup": true,
 		"list_ip_allowlist": true, "add_ip_allowlist_entry": true,
@@ -101,8 +104,9 @@ func TestDestructiveToolsRequireADestroyScope(t *testing.T) {
 		if spec.ReadOnly {
 			t.Errorf("tool %q is marked both read-only and destructive", spec.Name)
 		}
-		// stop_app is annotated destructive so clients prompt, but start_app reverses it.
-		if spec.Name == "stop_app" {
+		// Annotated destructive so clients prompt; both are reversible (ADR 0017).
+		reversible := map[string]bool{"stop_app": true, "disable_db_extension": true}
+		if reversible[spec.Name] {
 			continue
 		}
 		hasDestroy := false

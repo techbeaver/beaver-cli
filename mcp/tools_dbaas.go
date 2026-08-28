@@ -154,6 +154,8 @@ func registerDatabaseTools(r *Registry) {
 		return &ActionResult{Summary: fmt.Sprintf("Created database %q.", in.Name), Result: omit(item, "password")}, nil
 	})
 
+	registerExtensionTools(r)
+
 	register(r, toolSpec{
 		Name:     "list_db_roles",
 		Title:    "List database roles",
