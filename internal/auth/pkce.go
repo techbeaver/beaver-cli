@@ -1,6 +1,6 @@
 // Package auth performs the OAuth 2.1 flows this CLI uses.
 //
-// The requirements in docs/adr/0004-loopback-pkce-first.md are enforced here
+// The requirements in ADR 0004 are enforced here
 // and covered by tests, not left to review.
 package auth
 

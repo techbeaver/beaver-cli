@@ -87,7 +87,7 @@ state a script can retry rather than a failure.
 
 This is deliberate. The same credential can drive an AI agent, and an agent that can drop a
 production database because it misread a sentence is not something to hand anybody.
-See [ADR 0007](docs/adr/0007-server-side-destructive-gate.md).
+See ADR 0007.
 
 ## Use it as an MCP server
 
@@ -121,10 +121,11 @@ Report a vulnerability to security@techbeaver.io rather than in a public issue.
 
 ## Why it is built this way
 
-Rationale lives in [docs/adr](docs/adr), not in code comments.
-[0003](docs/adr/0003-public-repository-boundary.md) covers why this is open at all,
-[0004](docs/adr/0004-loopback-pkce-first.md) the login flow,
-[0007](docs/adr/0007-server-side-destructive-gate.md) the deletion gate.
+Decisions are recorded as numbered ADRs in TechBeaver's internal register rather than as
+code comments, and the code cites them by number: 0003 covers why this repository is open
+at all, 0004 the login flow, 0007 the deletion gate. The rules those set are stated in full
+in SECURITY.md and CONTRIBUTING.md, so nothing you need in order to read or build this is
+behind that register.
 
 ## Licence
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fails the build if anything from the private platform repository, or any
-# internal address, reaches this public repository. See docs/adr/0003.
+# internal address, reaches this public repository. See ADR 0003.
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
@@ -26,7 +26,7 @@ while IFS= read -r pattern; do
 done <<< "$(printf '%s' "$PATTERNS_B64" | base64 -d)"
 
 if [ "$fail" -ne 0 ]; then
-  echo "See docs/adr/0003-public-repository-boundary.md."
+  echo "See ADR 0003."
   exit 1
 fi
 echo "no forbidden content found"

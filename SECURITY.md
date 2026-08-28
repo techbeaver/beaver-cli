@@ -26,7 +26,7 @@ Findings that are in scope here:
 
 A `client_id` is compiled into this binary and visible in the source. That is how a public OAuth
 client works. It is an identifier, not a credential, and it grants nothing without a customer
-completing a consent screen. See [ADR 0005](docs/adr/0005-pre-registered-oauth-client.md).
+completing a consent screen. See ADR 0005.
 
 ## Verifying a release
 

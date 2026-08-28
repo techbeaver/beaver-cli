@@ -16,7 +16,7 @@ import (
 
 // Signing in from a build pipeline without a secret.
 //
-// Rationale is in docs/adr/0015-ci-workload-identity.md.
+// Rationale is in ADR 0015.
 
 // ErrNoWorkloadIdentity means this process is not running somewhere that can
 // prove who it is.

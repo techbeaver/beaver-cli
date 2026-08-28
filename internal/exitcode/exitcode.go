@@ -1,5 +1,5 @@
 // Package exitcode maps errors to the process exit codes documented in
-// docs/adr/0008-exit-codes-and-format-are-contract.md.
+// ADR 0008.
 //
 // The mapping lives in one place so a new command cannot invent its own
 // convention.

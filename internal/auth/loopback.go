@@ -18,7 +18,7 @@ import (
 )
 
 // ClientID is this CLI's pre-registered public OAuth client. It is an
-// identifier, not a secret: see docs/adr/0005-pre-registered-oauth-client.md.
+// identifier, not a secret: see ADR 0005.
 const ClientID = "beaver-cli"
 
 // CallbackPath is the loopback redirect path. Everything but the port must

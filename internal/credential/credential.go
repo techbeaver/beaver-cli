@@ -1,6 +1,6 @@
 // Package credential stores and loads the customer's tokens.
 //
-// Rationale is in docs/adr/0010-credential-storage.md. The rules it states are
+// Rationale is in ADR 0010. The rules it states are
 // requirements, not preferences.
 package credential
 
