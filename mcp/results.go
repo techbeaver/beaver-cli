@@ -21,6 +21,13 @@ type ListResult struct {
 type ObjectResult struct {
 	Summary string         `json:"summary" jsonschema:"a one line description of the result, safe to show the customer"`
 	Item    map[string]any `json:"item" jsonschema:"the object itself, exactly as the TechBeaver API returned it"`
+	// NextStep is set by the few reads whose answer is an instruction rather
+	// than a fact. check_repo_access is the case it was added for: "this
+	// repository cannot be cloned" is only useful next to "so do not create the
+	// app yet, and send the customer this link". Left empty by every read that
+	// simply reports something, so an agent never invents a follow-up for a
+	// question that was already fully answered.
+	NextStep string `json:"nextStep,omitempty" jsonschema:"what has to happen next, if anything; empty when there is nothing to do"`
 }
 
 // ActionResult is the shape of every tool that changes something.

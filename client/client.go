@@ -4,7 +4,7 @@
 // passes the same ownership check, service gate, rate limiter, audit trail and
 // human-approval gate as the console. Nothing here re-implements a rule.
 //
-// Rationale is in docs/adr/0014-http-only-api-client.md.
+// Rationale is in ADR 0014.
 package client
 
 import (

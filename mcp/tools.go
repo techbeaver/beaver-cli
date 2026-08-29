@@ -10,6 +10,7 @@ func AllTools() *Registry {
 	registerIdentityTools(r)
 	registerProjectTools(r)
 	registerPlanTools(r)
+	registerGitTools(r)
 	registerAppTools(r)
 	registerDatabaseTools(r)
 	registerObservationTools(r)

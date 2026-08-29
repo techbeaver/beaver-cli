@@ -1,7 +1,10 @@
 package command
 
 import (
+	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -29,6 +32,7 @@ func newDBCommand(env *Env) *cobra.Command {
 		newDBLogsCommand(env),
 		newDBRolesCommand(env),
 		newDBDatabasesCommand(env),
+		newDBExtensionsCommand(env),
 		newDBBackupsCommand(env),
 		newDBConnectionCommand(env),
 		newDBAllowlistCommand(env),
@@ -154,6 +158,76 @@ func newDBDatabasesCommand(env *Env) *cobra.Command {
 			body: func(args []string) any { return map[string]any{"name": args[1]} },
 		}),
 	)
+	return cmd
+}
+
+// newDBExtensionsCommand covers the one thing the platform does that a customer's own database
+// role cannot: install an untrusted extension. See ADR 0017.
+func newDBExtensionsCommand(env *Env) *cobra.Command {
+	cmd := &cobra.Command{Use: "extensions", Aliases: []string{"ext"}, Short: "Work with database extensions"}
+	cmd.AddCommand(
+		listCommand(env, listSpec{
+			use: "list ID DATABASE_ID", short: "List extensions and whether each is installed",
+			args: cobra.ExactArgs(2), path: extensionsPath(""),
+			columns: []string{"name", "label", "available", "installed", "version"},
+		}),
+		actionCommand(env, actionSpec{
+			use: "enable ID DATABASE_ID NAME", short: "Turn an extension on", args: cobra.ExactArgs(3),
+			path: extensionsPath(""),
+			body: func(args []string) any { return map[string]any{"name": args[2]} },
+		}),
+		newDBExtensionDisableCommand(env),
+	)
+	return cmd
+}
+
+func extensionsPath(suffix string) func(*Session, []string) (string, error) {
+	return func(_ *Session, args []string) (string, error) {
+		return "/dbaas/instances/" + args[0] + "/databases/" + args[1] + "/extensions" + suffix, nil
+	}
+}
+
+// newDBExtensionDisableCommand prompts locally and does not use RunDestructive.
+//
+// The platform marks this destructive but does not require a browser approval for it, and asking
+// for one would be refused: a confirmation may only cover a call that needs one. The drop runs
+// without CASCADE, so PostgreSQL refuses it outright if anything depends on the extension. What it
+// can do is stop a running application, which is what the prompt is for.
+func newDBExtensionDisableCommand(env *Env) *cobra.Command {
+	var assumeYes bool
+	cmd := &cobra.Command{
+		Use:   "disable ID DATABASE_ID NAME",
+		Short: "Turn an extension off",
+		Long:  "Refused, harmlessly, if anything in the schema still depends on the extension. Nothing is dropped with it.",
+		Args:  cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := env.Authenticate(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if !assumeYes && env.IsTTY {
+				fmt.Fprintf(env.Err, "About to disable the %q extension. Anything using it will break.\n", args[2])
+				fmt.Fprintf(env.Err, "\nType the extension name to continue: ")
+				var typed string
+				if _, err := fmt.Fscanln(env.In, &typed); err != nil {
+					return fmt.Errorf("cancelled")
+				}
+				if strings.TrimSpace(typed) != args[2] {
+					return fmt.Errorf("that did not match %q, so nothing was done", args[2])
+				}
+			}
+			envelope, err := s.Client.Do(cmd.Context(), s.Token, client.Request{
+				Method: http.MethodDelete,
+				Path: "/dbaas/instances/" + args[0] + "/databases/" + args[1] +
+					"/extensions/" + url.PathEscape(args[2]),
+			})
+			if err != nil {
+				return err
+			}
+			return renderObject(env, envelope)
+		},
+	}
+	cmd.Flags().BoolVar(&assumeYes, "yes", false, "skip the prompt")
 	return cmd
 }
 

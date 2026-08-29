@@ -34,6 +34,12 @@ type fakeAPI struct {
 	deleted   bool
 	approved  bool
 	checkouts int
+	// created counts apps actually created, i.e. invoices actually raised.
+	created int
+
+	// gitAccess is what /paas/git/access answers. Nil means the route is not
+	// there at all, which is the older API a released binary may still meet.
+	gitAccess map[string]any
 }
 
 type recordedRequest struct {
@@ -63,6 +69,15 @@ func (f *fakeAPI) sawHeader(path, header string) string {
 		}
 	}
 	return ""
+}
+
+func (f *fakeAPI) lastBody() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.requests) == 0 {
+		return ""
+	}
+	return f.requests[len(f.requests)-1].Body
 }
 
 func (f *fakeAPI) countCalls(method, path string) int {
@@ -131,6 +146,53 @@ func (f *fakeAPI) handler() http.Handler {
 				return
 			}
 			ok(w, map[string]any{"id": "app-1", "name": "checkout-service", "status": "running", "url": "https://checkout.example.test"})
+
+		case path == "/paas/apps/app-1/deployments":
+			ok(w, []map[string]any{
+				{"id": "dep-3", "revision": "checkout-service-00003", "status": "failed",
+					"failureStage": "build", "isActive": false, "createdAt": "2026-08-25T11:00:00Z"},
+				{"id": "dep-2", "revision": "checkout-service-00002", "status": "active",
+					"isActive": true, "createdAt": "2026-08-24T09:00:00Z"},
+			})
+
+		case path == "/paas/apps/app-1/rollback":
+			// An empty revision reaches a lookup that matches nothing and 500s, exactly as the API does.
+			var body map[string]any
+			_ = json.Unmarshal([]byte(f.lastBody()), &body)
+			revision, _ := body["revisionName"].(string)
+			if strings.TrimSpace(revision) == "" {
+				fail(w, http.StatusInternalServerError, "rollback_failed", "Rollback failed")
+				return
+			}
+			ok(w, map[string]any{"revision": revision, "status": "rolling-back"})
+
+		case path == "/paas/apps/app-1/root-directory":
+			var body map[string]any
+			_ = json.Unmarshal([]byte(f.lastBody()), &body)
+			root, _ := body["rootDirectory"].(string)
+			ok(w, map[string]any{"id": "app-1", "rootDirectory": root})
+
+		case path == "/paas/git/access":
+			f.mu.Lock()
+			answer := f.gitAccess
+			f.mu.Unlock()
+			if answer == nil {
+				fail(w, http.StatusNotFound, "not_found", "no such route")
+				return
+			}
+			ok(w, answer)
+
+		case path == "/paas/git/github/installations":
+			ok(w, []map[string]any{})
+
+		case path == "/paas/apps" && r.Method == http.MethodPost:
+			var body map[string]any
+			_ = json.Unmarshal([]byte(f.lastBody()), &body)
+			f.mu.Lock()
+			f.created++
+			f.mu.Unlock()
+			ok(w, map[string]any{"id": "app-2", "name": body["name"], "status": "building",
+				"rootDirectory": body["rootDirectory"]})
 
 		case path == "/paas/apps/app-1/custom-domains":
 			ok(w, []map[string]any{})
@@ -624,5 +686,349 @@ func TestSearchAndFetchWithholdSecrets(t *testing.T) {
 	res := callTool(t, session, "fetch", map[string]any{"id": "app:app-1"})
 	if strings.Contains(resultText(res), "hunter2") {
 		t.Fatal("fetch leaked a secret that get_env_vars would have withheld")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Rolling back
+// ---------------------------------------------------------------------------
+
+/*
+rollback_app sent an empty body for its whole life. The API requires a revision
+name, so the lookup ran for the empty string, matched nothing, and every call
+came back "Rollback failed" with a 500.
+
+It could not have been fixed in the tool alone: nothing in this surface listed
+an app's deployments, so nothing could have told it what to send. That is why
+list_deployments arrives with it.
+*/
+
+func TestRollingBackNamesTheRevisionItIsGoingTo(t *testing.T) {
+	api := &fakeAPI{scopes: scopes.Default}
+	session, _ := connectAgent(t, api, "btk_test-token")
+
+	res := callTool(t, session, "rollback_app", map[string]any{
+		"appId": "app-1", "revisionName": "checkout-service-00002",
+	})
+
+	if res.IsError {
+		t.Fatalf("rollback failed: %s", resultText(res))
+	}
+	if !strings.Contains(resultText(res), "checkout-service-00002") {
+		t.Errorf("the result does not say what it rolled back to: %s", resultText(res))
+	}
+}
+
+// TestRollingBackWithNoRevisionIsRefusedTwiceOver covers both ways a revision
+// goes missing. Refusing beats the 500 it used to produce, and beats guessing:
+// rolling back to something the customer did not choose is a second incident.
+//
+// Omitting the field entirely does not even reach the tool, because the schema
+// marks it required and the client refuses to make the call. An empty string
+// satisfies the schema and is what produced the 500, so the tool checks it too.
+func TestRollingBackWithNoRevisionIsRefusedTwiceOver(t *testing.T) {
+	api := &fakeAPI{scopes: scopes.Default}
+	session, _ := connectAgent(t, api, "btk_test-token")
+
+	omitted := callTool(t, session, "rollback_app", map[string]any{"appId": "app-1"})
+	if !omitted.IsError {
+		t.Fatal("a rollback with no revision must not be attempted")
+	}
+	if !strings.Contains(resultText(omitted), "revisionName") {
+		t.Errorf("the schema refusal does not name the missing field: %s", resultText(omitted))
+	}
+
+	empty := callTool(t, session, "rollback_app", map[string]any{
+		"appId": "app-1", "revisionName": "   ",
+	})
+	if !empty.IsError {
+		t.Fatal("an empty revision reaches a lookup that matches nothing; it must be refused here")
+	}
+	if !strings.Contains(resultText(empty), "list_deployments") {
+		t.Errorf("the refusal does not say where to find one: %s", resultText(empty))
+	}
+	if n := api.countCalls("POST", "/api/v1/paas/apps/app-1/rollback"); n != 0 {
+		t.Errorf("a refused rollback still reached the API %d time(s)", n)
+	}
+}
+
+// TestTheDeploymentListSaysWhichOneIsLive checks the question an agent is
+// actually answering, which is "what do I go back to". That is the last
+// revision that worked, not simply the previous one.
+func TestTheDeploymentListSaysWhichOneIsLive(t *testing.T) {
+	api := &fakeAPI{scopes: scopes.Default}
+	session, _ := connectAgent(t, api, "btk_test-token")
+
+	res := callTool(t, session, "list_deployments", map[string]any{"appId": "app-1"})
+
+	if res.IsError {
+		t.Fatalf("listing deployments failed: %s", resultText(res))
+	}
+	text := resultText(res)
+	if !strings.Contains(text, "is live") {
+		t.Errorf("the summary does not name the live revision: %s", text)
+	}
+	if !strings.Contains(text, "failureStage") {
+		t.Errorf("which half failed is what separates a bad Dockerfile from a bad port: %s", text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Repositories this platform cannot read
+// ---------------------------------------------------------------------------
+
+/*
+create_app on a priced plan raises an invoice immediately, and the clone happens
+later in a build pod. So a private repository the platform has no access to went:
+agent creates the app, customer pays, build fails on code nobody could ever have
+cloned, explanation sits in a log. The fix is on GitHub, where only the customer
+can perform it.
+
+The console had a Connect GitHub step in front of the person the whole time. This
+surface had no tool and no way for an agent even to ask.
+*/
+
+func createArgs(repo string) map[string]any {
+	return map[string]any{
+		"projectId": "proj-1", "name": "new-app", "gitRepo": repo,
+		"idempotencyKey": "key-1",
+	}
+}
+
+func TestCreateAppRefusesARepoThePlatformCannotRead(t *testing.T) {
+	api := &fakeAPI{scopes: scopes.Default, gitAccess: map[string]any{
+		"provider": "github", "owner": "acme", "repo": "secret",
+		"checked": true, "reachable": false, "reason": "not_installed",
+		"detail":     "the TechBeaver GitHub App is not installed on \"acme\", so it cannot read acme/secret.",
+		"installUrl": "https://github.com/apps/techbeaver/installations/new",
+	}}
+	session, _ := connectAgent(t, api, "btk_test-token")
+
+	res := callTool(t, session, "create_app", createArgs("https://github.com/acme/secret"))
+
+	if !res.IsError {
+		t.Fatal("creating an app against an unreadable repository must fail before anything is created")
+	}
+	// The whole point: no app, so no invoice.
+	if api.created != 0 {
+		t.Errorf("the app was created anyway (%d times), so the customer was charged for something that cannot build", api.created)
+	}
+	text := resultText(res)
+	for _, want := range []string{"acme", "github.com/apps/techbeaver", "nothing has been charged"} {
+		if !strings.Contains(strings.ToLower(text), strings.ToLower(want)) {
+			t.Errorf("the refusal does not mention %q: %s", want, text)
+		}
+	}
+}
+
+func TestCreateAppProceedsWhenTheRepoIsReachable(t *testing.T) {
+	api := &fakeAPI{scopes: scopes.Default, gitAccess: map[string]any{
+		"provider": "github", "owner": "acme", "repo": "public-thing",
+		"checked": true, "reachable": true, "public": true,
+	}}
+	session, _ := connectAgent(t, api, "btk_test-token")
+
+	res := callTool(t, session, "create_app", createArgs("https://github.com/acme/public-thing"))
+
+	if res.IsError {
+		t.Fatalf("a reachable repository must not be blocked: %s", resultText(res))
+	}
+	if api.created != 1 {
+		t.Errorf("expected the app to be created once, got %d", api.created)
+	}
+}
+
+// TestCreateAppIsNotBlockedByACheckItCouldNotRun covers the two ways the check
+// itself is unavailable: the route is missing (an older API than this binary),
+// and the provider cannot be judged ahead of time (GitLab clones with the
+// project owner's own connection). Neither is evidence that the repository is
+// unreachable, and refusing on either would make this guard worse than the
+// problem it was added for.
+func TestCreateAppIsNotBlockedByACheckItCouldNotRun(t *testing.T) {
+	for name, api := range map[string]*fakeAPI{
+		"route missing": {scopes: scopes.Default, gitAccess: nil},
+		"not checkable": {scopes: scopes.Default, gitAccess: map[string]any{
+			"provider": "gitlab", "checked": false, "reachable": false,
+			"detail": "gitlab repositories are cloned with the connection the project owner made in the console.",
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			session, _ := connectAgent(t, api, "btk_test-token")
+			res := callTool(t, session, "create_app", createArgs("https://gitlab.com/acme/api"))
+			if res.IsError {
+				t.Fatalf("creation was blocked by an inconclusive check: %s", resultText(res))
+			}
+			if api.created != 1 {
+				t.Errorf("expected the app to be created, got %d creations", api.created)
+			}
+		})
+	}
+}
+
+// TestCreateAppWithNoRepositoryNeverAsksAboutOne covers how the AI builder
+// deploys: source this platform already holds, no repository at all. Asking
+// GitHub about an empty string would be a wasted call at best and a spurious
+// refusal at worst.
+func TestCreateAppWithNoRepositoryNeverAsksAboutOne(t *testing.T) {
+	api := &fakeAPI{scopes: scopes.Default}
+	session, _ := connectAgent(t, api, "btk_test-token")
+
+	res := callTool(t, session, "create_app", map[string]any{
+		"projectId": "proj-1", "name": "generated-site", "idempotencyKey": "key-2",
+	})
+
+	if res.IsError {
+		t.Fatalf("an app with no repository must still be creatable: %s", resultText(res))
+	}
+	if n := api.countCalls("GET", "/api/v1/paas/git/access"); n != 0 {
+		t.Errorf("the access check ran %d times for an app with no repository", n)
+	}
+}
+
+// TestCreateAppIsNotBlockedByGitHubItselfBeingBroken separates the check
+// answering "no" from the check answering "GitHub would not talk to me".
+// Treating the second as a refusal would mean an outage at GitHub stops
+// customers creating apps here at all, including from public repositories that
+// clone without any credential.
+func TestCreateAppIsNotBlockedByGitHubItselfBeingBroken(t *testing.T) {
+	for _, reason := range []string{"github_error", "app_not_configured"} {
+		t.Run(reason, func(t *testing.T) {
+			api := &fakeAPI{scopes: scopes.Default, gitAccess: map[string]any{
+				"provider": "github", "owner": "acme", "repo": "thing",
+				"checked": true, "reachable": false, "reason": reason,
+				"detail": "could not obtain GitHub credentials for acme/thing",
+			}}
+			session, _ := connectAgent(t, api, "btk_test-token")
+
+			res := callTool(t, session, "create_app", createArgs("https://github.com/acme/thing"))
+
+			if res.IsError {
+				t.Fatalf("creation was refused over a failure that says nothing about the repository: %s", resultText(res))
+			}
+			if api.created != 1 {
+				t.Errorf("expected the app to be created, got %d creations", api.created)
+			}
+		})
+	}
+}
+
+func TestCheckRepoAccessHandsOverTheInstallLink(t *testing.T) {
+	api := &fakeAPI{scopes: scopes.Default, gitAccess: map[string]any{
+		"provider": "github", "owner": "acme", "repo": "secret",
+		"checked": true, "reachable": false, "reason": "not_installed",
+		"detail":     "the TechBeaver GitHub App is not installed on \"acme\".",
+		"installUrl": "https://github.com/apps/techbeaver/installations/new",
+	}}
+	session, _ := connectAgent(t, api, "btk_test-token")
+
+	res := callTool(t, session, "check_repo_access", map[string]any{
+		"gitRepo": "https://github.com/acme/secret",
+	})
+
+	if res.IsError {
+		t.Fatalf("the check itself must not error just because the answer is no: %s", resultText(res))
+	}
+	text := resultText(res)
+	// The link is what the customer needs, and only they can act on it.
+	if !strings.Contains(text, "https://github.com/apps/techbeaver/installations/new") {
+		t.Errorf("the install link is not in the result: %s", text)
+	}
+	if !strings.Contains(strings.ToLower(text), "do not create the app yet") {
+		t.Errorf("the result does not tell the agent to stop: %s", text)
+	}
+}
+
+// TestCheckRepoAccessTellsAnAgentToStopTalkingWhenThereIsNothingToDo pins that
+// a reachable repository produces no next step at all. Otherwise an agent
+// recites a GitHub connection procedure at somebody whose repo already works.
+func TestCheckRepoAccessTellsAnAgentToStopTalkingWhenThereIsNothingToDo(t *testing.T) {
+	api := &fakeAPI{scopes: scopes.Default, gitAccess: map[string]any{
+		"provider": "github", "owner": "acme", "repo": "thing",
+		"checked": true, "reachable": true,
+		"installUrl": "https://github.com/apps/techbeaver/installations/new",
+	}}
+	session, _ := connectAgent(t, api, "btk_test-token")
+
+	res := callTool(t, session, "check_repo_access", map[string]any{"gitRepo": "https://github.com/acme/thing"})
+
+	if strings.Contains(strings.ToLower(resultText(res)), "do not create") {
+		t.Errorf("a working repository must not come with an instruction: %s", resultText(res))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Monorepos
+// ---------------------------------------------------------------------------
+
+/*
+A repository whose app lives in apps/web could not be deployed from this surface
+at all. Everything after the checkout was pinned to the repository root, so the
+build found the wrong project or none, and there was no tool to correct it after
+a first build looked in the wrong place.
+*/
+
+func TestCreateAppCarriesTheRootDirectoryForAMonorepo(t *testing.T) {
+	api := &fakeAPI{scopes: scopes.Default, gitAccess: map[string]any{
+		"provider": "github", "owner": "acme", "repo": "monorepo",
+		"checked": true, "reachable": true, "public": true,
+	}}
+	session, _ := connectAgent(t, api, "btk_test-token")
+
+	args := createArgs("https://github.com/acme/monorepo")
+	args["rootDirectory"] = "apps/web"
+	res := callTool(t, session, "create_app", args)
+
+	if res.IsError {
+		t.Fatalf("create_app failed: %s", resultText(res))
+	}
+	if !strings.Contains(api.lastBody(), `"rootDirectory":"apps/web"`) {
+		t.Errorf("the root directory never reached the API: %s", api.lastBody())
+	}
+}
+
+// TestSettingTheRootDirectoryDoesNotRedeployByItself pins that the change waits
+// for a deploy. Applying it unasked would rebuild an app the customer had not
+// finished configuring.
+func TestSettingTheRootDirectoryDoesNotRedeployByItself(t *testing.T) {
+	api := &fakeAPI{scopes: scopes.Default}
+	session, _ := connectAgent(t, api, "btk_test-token")
+
+	res := callTool(t, session, "set_root_directory", map[string]any{
+		"appId": "app-1", "rootDirectory": "apps/web",
+	})
+
+	if res.IsError {
+		t.Fatalf("set_root_directory failed: %s", resultText(res))
+	}
+	if !strings.Contains(resultText(res), "apps/web") {
+		t.Errorf("the result does not say what it now builds from: %s", resultText(res))
+	}
+	if !strings.Contains(resultText(res), "deploy_app") {
+		t.Errorf("the result does not say that nothing rebuilds by itself: %s", resultText(res))
+	}
+	if n := api.countCalls("POST", "/api/v1/paas/apps/app-1/deploy"); n != 0 {
+		t.Errorf("setting the root directory triggered %d deploy(s)", n)
+	}
+}
+
+// TestAnEmptyRootDirectoryMeansTheRepositoryRoot pins that empty is a real
+// value here, not an absent one: it is how somebody undoes a wrong
+// subdirectory. Dropping it would leave the app pinned to the old one.
+func TestAnEmptyRootDirectoryMeansTheRepositoryRoot(t *testing.T) {
+	api := &fakeAPI{scopes: scopes.Default}
+	session, _ := connectAgent(t, api, "btk_test-token")
+
+	res := callTool(t, session, "set_root_directory", map[string]any{
+		"appId": "app-1", "rootDirectory": "",
+	})
+
+	if res.IsError {
+		t.Fatalf("clearing the root directory failed: %s", resultText(res))
+	}
+	if !strings.Contains(api.lastBody(), `"rootDirectory":""`) {
+		t.Errorf("the empty value was dropped instead of sent: %s", api.lastBody())
+	}
+	if !strings.Contains(strings.ToLower(resultText(res)), "repository root") {
+		t.Errorf("the result does not say it now builds from the root: %s", resultText(res))
 	}
 }

@@ -476,3 +476,45 @@ func TestOnARunnerAnExpiredCredentialIsExchangedAgainRatherThanFailing(t *testin
 		t.Fatalf("the stale token was not replaced: %v %v", stored, err)
 	}
 }
+
+// TestExtensionCommandsAddressTheDatabaseNotTheInstance pins the nested path.
+//
+// Both ids are path segments the API resolves against each other, so a database id under the wrong
+// instance is a 404 rather than another tenant's schema. That check is the platform's; getting the
+// two segments the right way round is this CLI's, and swapping them here would send every call to
+// a database that does not exist under an instance that does.
+func TestExtensionCommandsAddressTheDatabaseNotTheInstance(t *testing.T) {
+	api := newFakeAPI(t, func(_ *fakeAPI, w http.ResponseWriter, _ *http.Request) {
+		writeEnvelope(w, http.StatusOK, map[string]any{"ok": true})
+	})
+	env, _, _ := newTestEnv(t, api.URL)
+
+	if err := run(t, env, "db", "extensions", "enable", "inst-1", "db-2", "postgis"); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if err := run(t, env, "db", "extensions", "disable", "inst-1", "db-2", "postgis"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if err := run(t, env, "db", "extensions", "list", "inst-1", "db-2"); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	const base = "/dbaas/instances/inst-1/databases/db-2/extensions"
+	if n := api.calls(http.MethodPost, base); n != 1 {
+		t.Errorf("expected one POST to %s, got %d", base, n)
+	}
+	if n := api.calls(http.MethodDelete, base+"/postgis"); n != 1 {
+		t.Errorf("expected one DELETE to %s/postgis, got %d", base, n)
+	}
+	if n := api.calls(http.MethodGet, base); n != 1 {
+		t.Errorf("expected one GET to %s, got %d", base, n)
+	}
+	for _, r := range api.requests {
+		if r.method == http.MethodPost && r.body["name"] != "postgis" {
+			t.Errorf("the extension name must be in the body, got %v", r.body)
+		}
+		if r.confirmation != "" {
+			t.Error("no extension call needs a browser confirmation; sending one would be refused")
+		}
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/techbeaver/beaver-cli/client"
 	"github.com/techbeaver/beaver-cli/scopes"
@@ -24,16 +25,34 @@ type createAppInput struct {
 	Name      string `json:"name" jsonschema:"a name for the app, 3 to 50 characters"`
 	GitRepo   string `json:"gitRepo,omitempty" jsonschema:"the https URL of the git repository to deploy from"`
 	Branch    string `json:"branch,omitempty" jsonschema:"which branch to deploy; defaults to the repository's default"`
-	Subdomain string `json:"subdomain,omitempty" jsonschema:"the subdomain to publish on; one is derived from the name if omitted"`
-	Framework string `json:"framework,omitempty" jsonschema:"nixpacks to build automatically, or dockerfile to use a Dockerfile in the repository"`
-	Port      int    `json:"port,omitempty" jsonschema:"the port the app listens on inside its container"`
-	PlanID    string `json:"planId,omitempty" jsonschema:"which plan to buy, from list_plans; omitted means the cheapest active plan"`
+	// RootDirectory is how a monorepo is deployed. Omitted, the build reads the
+	// top of the repository, which for a monorepo is the wrong project or none.
+	RootDirectory string `json:"rootDirectory,omitempty" jsonschema:"the subdirectory of the repository to build, for a monorepo, e.g. apps/web; omit for a repository whose app is at its root"`
+	Subdomain     string `json:"subdomain,omitempty" jsonschema:"the subdomain to publish on; one is derived from the name if omitted"`
+	Framework     string `json:"framework,omitempty" jsonschema:"nixpacks to build automatically, or dockerfile to use a Dockerfile in the repository"`
+	Port          int    `json:"port,omitempty" jsonschema:"the port the app listens on inside its container"`
+	PlanID        string `json:"planId,omitempty" jsonschema:"which plan to buy, from list_plans; omitted means the cheapest active plan"`
 	// BillingCycle is not defaulted here on purpose: a plan may have no price
 	// for a cycle, and the API refuses that rather than treating it as free.
 	BillingCycle   string            `json:"billingCycle,omitempty" jsonschema:"monthly or yearly"`
 	EnvVars        map[string]string `json:"envVars,omitempty" jsonschema:"environment variables the running app will see"`
 	BuildEnv       map[string]string `json:"buildEnv,omitempty" jsonschema:"environment variables available only while building"`
 	IdempotencyKey string            `json:"idempotencyKey" jsonschema:"a unique string you generate once for this creation; reuse exactly the same value if you retry, or the customer may be charged twice"`
+}
+
+// rollbackInput carries the revision because the API has always required one.
+// An app id alone cannot express "go back to this", and the endpoint has no
+// notion of "the previous one".
+type rollbackInput struct {
+	AppID        string `json:"appId" jsonschema:"the app's id"`
+	RevisionName string `json:"revisionName" jsonschema:"the revision to put back, from list_deployments; use the last one whose status was active"`
+}
+
+type setRootDirectoryInput struct {
+	AppID string `json:"appId" jsonschema:"the app's id"`
+	// Not omitempty: an empty string is the way to say "build from the
+	// repository root", so it has to reach the API rather than be dropped.
+	RootDirectory string `json:"rootDirectory" jsonschema:"the subdirectory to build, e.g. apps/web; an empty string builds from the repository root"`
 }
 
 type setEnvInput struct {
@@ -70,14 +89,18 @@ func registerAppTools(r *Registry) {
 		Name:        "create_app",
 		Title:       "Create an app",
 		Scopes:      []string{scopes.PaaSWrite},
-		Description: "Creates an application in a project and queues its first build. On a priced plan this raises an invoice and the app stays in pending_payment until the customer pays: use create_checkout_link and hand them the payment link. Call list_plans first rather than assuming a plan id.",
+		Description: "Creates an application in a project and queues its first build. On a priced plan this raises an invoice and the app stays in pending_payment until the customer pays: use create_checkout_link and hand them the payment link. Call list_plans first rather than assuming a plan id. For a monorepo, set rootDirectory to the subdirectory the app lives in, e.g. apps/web, or the build will look at the repository root and fail or build the wrong thing.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in createAppInput) (*ActionResult, error) {
 		if err := requireIdempotencyKey(in.IdempotencyKey); err != nil {
+			return nil, err
+		}
+		if err := repoMustBeReachable(ctx, deps, call, in.GitRepo); err != nil {
 			return nil, err
 		}
 		body := map[string]any{"projectId": in.ProjectID, "name": in.Name}
 		putIfSet(body, "gitRepo", in.GitRepo)
 		putIfSet(body, "branch", in.Branch)
+		putIfSet(body, "rootDirectory", in.RootDirectory)
 		putIfSet(body, "subdomain", in.Subdomain)
 		putIfSet(body, "framework", in.Framework)
 		putIfSet(body, "paasPlanId", in.PlanID)
@@ -126,17 +149,73 @@ func registerAppTools(r *Registry) {
 	})
 
 	register(r, toolSpec{
+		Name:     "list_deployments",
+		Title:    "List an app's deployments",
+		Scopes:   []string{scopes.PaaSRead},
+		ReadOnly: true, Idempotent: true,
+		Description: "What this app has run, newest first: the revision name, whether it worked, which half failed if it did not, and which one is serving traffic now. Read this before rollback_app, which needs a revision name, and to answer \"when did this break\" without reading logs.",
+	}, func(ctx context.Context, deps *Deps, call *Call, in appIDInput) (*ListResult, error) {
+		items, err := apiList(ctx, deps, call, "/paas/apps/"+url.PathEscape(in.AppID)+"/deployments", nil)
+		if err != nil {
+			return nil, err
+		}
+		summary := fmt.Sprintf("%d deployment(s).", len(items))
+		for _, item := range items {
+			if pick(item, "isActive") == "true" {
+				summary = fmt.Sprintf("%d deployment(s); %s is live.", len(items), pick(item, "revision"))
+				break
+			}
+		}
+		return &ListResult{Summary: summary, Count: len(items), Items: items}, nil
+	})
+
+	register(r, toolSpec{
 		Name:        "rollback_app",
 		Title:       "Roll a deployment back",
 		Scopes:      []string{scopes.PaaSDeploy},
-		Description: "Puts the previous working deployment back. Use this when a deploy broke something in production; it is the fast way back and it destroys nothing.",
-	}, func(ctx context.Context, deps *Deps, call *Call, in appIDInput) (*ActionResult, error) {
-		env, err := apiSend(ctx, deps, call, http.MethodPost, "/paas/apps/"+url.PathEscape(in.AppID)+"/rollback", map[string]any{}, nil)
+		Description: "Puts a named earlier revision back. There is no \"previous deployment\" shortcut: call list_deployments, pick the last revision whose status was active, and pass its revision name. It destroys nothing and builds nothing, so it is the fast way back when a deploy broke production.",
+	}, func(ctx context.Context, deps *Deps, call *Call, in rollbackInput) (*ActionResult, error) {
+		revision := strings.TrimSpace(in.RevisionName)
+		if revision == "" {
+			return nil, fmt.Errorf("rollback needs the name of the revision to go back to. " +
+				"Call list_deployments for this app and use the revision of the last deployment whose status was active")
+		}
+		env, err := apiSend(ctx, deps, call, http.MethodPost,
+			"/paas/apps/"+url.PathEscape(in.AppID)+"/rollback",
+			map[string]any{"revisionName": revision}, nil)
 		if err != nil {
 			return nil, err
 		}
 		item, _ := client.DecodeObject(env)
-		return &ActionResult{Summary: "Rollback started.", Result: item}, nil
+		return &ActionResult{
+			Summary:  fmt.Sprintf("Rolling back to %s.", revision),
+			Result:   item,
+			NextStep: "Poll get_app for the status. Nothing was rebuilt, so this is the image that was already there.",
+		}, nil
+	})
+
+	register(r, toolSpec{
+		Name:        "set_root_directory",
+		Title:       "Set the folder an app builds from",
+		Scopes:      []string{scopes.PaaSWrite},
+		Description: "For a monorepo, the subdirectory the app lives in, e.g. apps/web. Its Dockerfile, its package.json and its whole build come from there. An empty string builds from the repository root. This is the fix when a build failed because it looked at the top of the repository and found the wrong project, or nothing. Applies on the next deploy, so call deploy_app afterwards.",
+	}, func(ctx context.Context, deps *Deps, call *Call, in setRootDirectoryInput) (*ActionResult, error) {
+		env, err := apiSend(ctx, deps, call, http.MethodPatch,
+			"/paas/apps/"+url.PathEscape(in.AppID)+"/root-directory",
+			map[string]any{"rootDirectory": in.RootDirectory}, nil)
+		if err != nil {
+			return nil, err
+		}
+		item, _ := client.DecodeObject(env)
+		summary := fmt.Sprintf("This app now builds from %s.", in.RootDirectory)
+		if in.RootDirectory == "" {
+			summary = "This app now builds from the repository root."
+		}
+		return &ActionResult{
+			Summary:  summary,
+			Result:   item,
+			NextStep: "Nothing rebuilds by itself. Call deploy_app when the customer is ready.",
+		}, nil
 	})
 
 	register(r, toolSpec{

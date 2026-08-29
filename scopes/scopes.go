@@ -4,7 +4,7 @@
 // no combination of grants reaches an administrative route. A scope that is
 // defined is not necessarily issuable: see [Issuable].
 //
-// Rationale is in docs/adr/0013-scope-vocabulary.md.
+// Rationale is in ADR 0013.
 package scopes
 
 import (
