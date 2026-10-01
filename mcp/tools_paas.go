@@ -219,6 +219,28 @@ func registerAppTools(r *Registry) {
 	})
 
 	register(r, toolSpec{
+		Name:        "undelete_app",
+		Title:       "Bring back a deleted app",
+		Scopes:      []string{scopes.PaaSWrite},
+		Description: "Restores an app deleted in the last 7 days. It comes back stopped, so call deploy_app afterwards to bring it online. Custom domains are not restored and have to be added again. An app deleted by a partner key's standing pre-approval comes back with its environment variables; one deleted any other way comes back without them, and the customer has to set them again.",
+	}, func(ctx context.Context, deps *Deps, call *Call, in appIDInput) (*ActionResult, error) {
+		env, err := apiSend(ctx, deps, call, http.MethodPost, "/paas/apps/"+url.PathEscape(in.AppID)+"/undelete", map[string]any{}, nil)
+		if err != nil {
+			return nil, err
+		}
+		item, _ := client.DecodeObject(env)
+		next := "Call deploy_app to bring it back online, and add any custom domains again."
+		if n, ok := item["envVarsRestored"].(float64); ok && n == 0 {
+			next = "No environment variables came back. Ask the customer for them and call set_env_vars, then deploy_app, and add any custom domains again."
+		}
+		return &ActionResult{
+			Summary:  "App restored. It is stopped until it is deployed.",
+			Result:   item,
+			NextStep: next,
+		}, nil
+	})
+
+	register(r, toolSpec{
 		Name:        "stop_app",
 		Title:       "Stop an app",
 		Scopes:      []string{scopes.PaaSWrite},

@@ -157,7 +157,7 @@ func registerDestructiveTools(r *Registry) {
 		Title:       "Delete a project",
 		Scopes:      []string{scopes.ProjectsWrite, scopes.PaaSDestroy},
 		Destructive: true,
-		Description: "Deletes a project. This is the widest destructive action on this surface: a project holds apps and managed databases, so deleting it takes them with it. Needs both write and destroy permission, and the account owner's approval in a browser.",
+		Description: "Deletes an empty project. The API refuses while the project still holds an app or a managed database, so delete those first (delete_app, delete_database); this never takes anything with it. Needs both write and destroy permission, and the account owner's approval in a browser.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
 		ProjectID         string `json:"projectId" jsonschema:"the project's id"`
 		ConfirmationToken string `json:"confirmationToken,omitempty" jsonschema:"leave this out on the first call to get a preview and an approval link"`
@@ -166,7 +166,7 @@ func registerDestructiveTools(r *Registry) {
 		spec := destructiveSpec{
 			Method: http.MethodDelete, Path: path,
 			Action: "delete", ResourceType: "project", ResourceID: in.ProjectID,
-			RecoveryNote: "Everything inside the project goes with it. Application source stays in the customer's git repositories; managed database contents do not, beyond whatever backups exist.",
+			RecoveryNote: "Only an empty project can be deleted: the API refuses while it still holds an app or a managed database, so nothing inside it goes with it.",
 		}
 		if in.ConfirmationToken == "" {
 			project, err := apiGet(ctx, deps, call, path, nil)
@@ -181,9 +181,13 @@ func registerDestructiveTools(r *Registry) {
 				"region":            pick(project, "regionCode"),
 				"appsAffected":      len(apps),
 				"databasesAffected": len(databases),
-				"whatGoes":          "the project and everything in it",
+				"whatGoes":          "the empty project; the API refuses while appsAffected or databasesAffected is above zero",
 			}
-			spec.ElicitMessage = fmt.Sprintf("Delete the project %q and everything in it?", spec.ResourceName)
+			if len(apps) > 0 || len(databases) > 0 {
+				return nil, fmt.Errorf("the project %q still holds %d app(s) and %d managed database(s), and the API refuses to delete a project that is not empty. "+
+					"Delete those first with delete_app and delete_database, each with the customer's approval", spec.ResourceName, len(apps), len(databases))
+			}
+			spec.ElicitMessage = fmt.Sprintf("Delete the empty project %q?", spec.ResourceName)
 		}
 		return performDestructive(ctx, deps, call, in.ConfirmationToken, spec)
 	})

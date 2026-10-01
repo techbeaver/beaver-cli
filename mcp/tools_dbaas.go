@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
+	"time"
 
 	"github.com/techbeaver/beaver-cli/client"
 	"github.com/techbeaver/beaver-cli/scopes"
@@ -246,6 +248,65 @@ func registerDatabaseTools(r *Registry) {
 		}
 		item, _ := client.DecodeObject(env)
 		return &ActionResult{Summary: "Backup started.", Result: item}, nil
+	})
+
+	register(r, toolSpec{
+		Name:     "list_deleted_databases",
+		Title:    "List deleted databases that can be restored",
+		Scopes:   []string{scopes.DBaaSRead},
+		ReadOnly: true, Idempotent: true,
+		Description: "The managed databases deleted from a project whose backups are still kept, each with the time until which it can be restored. This is where a customer who deleted a database by mistake starts; restore_deleted_database brings one back as a new database.",
+	}, func(ctx context.Context, deps *Deps, call *Call, in projectIDInput) (*ListResult, error) {
+		items, err := apiList(ctx, deps, call, "/dbaas/projects/"+url.PathEscape(in.ProjectID)+"/deleted-instances", nil)
+		if err != nil {
+			return nil, err
+		}
+		summary := fmt.Sprintf("%d deleted database(s) can still be restored.", len(items))
+		if len(items) == 0 {
+			summary = "No deleted database in this project can be restored: none was deleted, or its backups are no longer kept."
+		}
+		return &ListResult{Summary: summary, Count: len(items), Items: items}, nil
+	})
+
+	register(r, toolSpec{
+		Name:        "restore_deleted_database",
+		Title:       "Restore a deleted database",
+		Scopes:      []string{scopes.DBaaSWrite},
+		Description: "Recovers a deleted managed database from its kept backups into a NEW database in the same project, optionally to a point in time. Nothing existing is overwritten. The new database is a purchase: it waits in pending_payment until the customer opens the payment link, and it needs a name. Find the id with list_deleted_databases.",
+	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
+		DeletedInstanceID string `json:"deletedInstanceId" jsonschema:"the deleted database's id, from list_deleted_databases"`
+		Name              string `json:"name" jsonschema:"a name for the new database"`
+		TargetTime        string `json:"targetTime,omitempty" jsonschema:"an RFC 3339 timestamp to recover to; omitted means the latest available point"`
+		IdempotencyKey    string `json:"idempotencyKey" jsonschema:"a unique string you generate once for this restore; reuse exactly the same value if you retry, or the customer may end up with two databases they pay for"`
+	}) (*ActionResult, error) {
+		if strings.TrimSpace(in.Name) == "" {
+			return nil, fmt.Errorf("the restored database needs a name. Ask the customer what to call it")
+		}
+		if err := requireIdempotencyKey(in.IdempotencyKey); err != nil {
+			return nil, err
+		}
+		body := map[string]any{"name": strings.TrimSpace(in.Name)}
+		if strings.TrimSpace(in.TargetTime) != "" {
+			if _, err := time.Parse(time.RFC3339, in.TargetTime); err != nil {
+				return nil, fmt.Errorf("targetTime has to be an RFC 3339 timestamp such as 2026-08-19T14:00:00Z, not %q", in.TargetTime)
+			}
+			body["targetTime"] = in.TargetTime
+		}
+		env, err := apiSend(ctx, deps, call, http.MethodPost,
+			"/dbaas/deleted-instances/"+url.PathEscape(in.DeletedInstanceID)+"/restore", body, idempotencyHeaders(in.IdempotencyKey))
+		if err != nil {
+			return nil, err
+		}
+		item, _ := client.DecodeObject(env)
+		next := "Give the customer the payment link in authorizationUrl. The restore starts once it is paid; you cannot pay on their behalf."
+		if settled, _ := item["fullySettled"].(bool); settled {
+			next = "Nothing was owed, so the restore has started. Poll get_database on the new database for its status."
+		}
+		return &ActionResult{
+			Summary:  "A new database was created to restore into.",
+			Result:   item,
+			NextStep: next,
+		}, nil
 	})
 
 	register(r, toolSpec{
