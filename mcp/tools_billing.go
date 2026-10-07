@@ -153,6 +153,7 @@ func registerBillingTools(r *Registry) {
 		ResourceType   string `json:"resourceType" jsonschema:"app or database"`
 		ResourceID     string `json:"resourceId" jsonschema:"the app's or managed database's id"`
 		DiscountCode   string `json:"discountCode,omitempty" jsonschema:"a promotion code to apply"`
+		PaymentSource  string `json:"paymentSource,omitempty" jsonschema:"leave empty for a payment link. Only a partner key (whoami canSpendCredit true) may set balance or saved_card to pay with no payment page; any other connection is refused"`
 		IdempotencyKey string `json:"idempotencyKey" jsonschema:"a unique string you generate once; reuse exactly the same value if you retry, or the customer may be charged twice"`
 	}) (*CheckoutResult, error) {
 		if err := requireIdempotencyKey(in.IdempotencyKey); err != nil {
@@ -169,6 +170,7 @@ func registerBillingTools(r *Registry) {
 		}
 		body := map[string]any{}
 		putIfSet(body, "discountCode", in.DiscountCode)
+		putIfSet(body, "paymentSource", in.PaymentSource)
 		env, err := apiSend(ctx, deps, call, http.MethodPost, path, body, idempotencyHeaders(in.IdempotencyKey))
 		if err != nil {
 			return nil, err
@@ -176,6 +178,53 @@ func registerBillingTools(r *Registry) {
 		item, _ := client.DecodeObject(env)
 		return checkoutResult(item, "Payment page ready."), nil
 	})
+
+	register(r, toolSpec{
+		Name:     "get_prepaid_balance",
+		Title:    "Get the prepaid balance",
+		Scopes:   []string{scopes.BillingRead},
+		ReadOnly: true, Idempotent: true,
+		Description: "How much money the account has paid in advance, and its latest movements. Renewals are paid from it before any card. It can only be spent on TechBeaver: it is never withdrawn or refunded as cash.",
+	}, func(ctx context.Context, deps *Deps, call *Call, _ emptyInput) (*ObjectResult, error) {
+		item, err := apiGet(ctx, deps, call, "/billing/prepaid-balance", nil)
+		if err != nil {
+			return nil, err
+		}
+		return &ObjectResult{Summary: "Prepaid balance, in kobo.", Item: item}, nil
+	})
+
+	register(r, toolSpec{
+		Name:        "create_topup_link",
+		Title:       "Prepare a prepaid balance top-up",
+		Scopes:      []string{scopes.BillingCheckout},
+		Description: "Produces a hosted payment page that adds money to the prepaid balance. It does NOT pay: hand the link over and tell the customer only they can complete it. Amount in kobo, from 100000 (N1,000) to 1000000000 (N10,000,000). Tell them a top-up cannot be refunded as cash.",
+	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
+		AmountMinor    int64  `json:"amountMinor" jsonschema:"how much to add, in kobo"`
+		IdempotencyKey string `json:"idempotencyKey" jsonschema:"a unique string you generate once; reuse exactly the same value if you retry, or the customer may be charged twice"`
+	}) (*CheckoutResult, error) {
+		if err := requireIdempotencyKey(in.IdempotencyKey); err != nil {
+			return nil, err
+		}
+		env, err := apiSend(ctx, deps, call, http.MethodPost, "/billing/prepaid-balance/top-ups",
+			map[string]any{"amountMinor": in.AmountMinor}, idempotencyHeaders(in.IdempotencyKey))
+		if err != nil {
+			return nil, err
+		}
+		item, _ := client.DecodeObject(env)
+		return checkoutResult(item, "Top-up payment page ready."), nil
+	})
+}
+
+// paidWithoutLink says how a create or checkout was paid when no payment page was involved, or
+// "" when it was not paid that way.
+func paidWithoutLink(item map[string]any) string {
+	switch {
+	case item["paidFromBalance"] == true:
+		return "from the prepaid balance"
+	case item["paidWithSavedCard"] == true:
+		return "with the saved card"
+	}
+	return ""
 }
 
 // checkoutResult reads the payment link out of a checkout response and says the
@@ -188,6 +237,11 @@ func registerBillingTools(r *Registry) {
 func checkoutResult(item map[string]any, summary string) *CheckoutResult {
 	link := pick(item, "authorizationUrl", "paymentUrl", "checkoutUrl")
 	out := &CheckoutResult{Summary: summary, Result: item, PaymentURL: link}
+	if paid := paidWithoutLink(item); paid != "" {
+		out.Summary = "Paid " + paid + "."
+		out.NextStep = "No payment link is needed: it is paid. Confirm with get_invoice if the customer asks."
+		return out
+	}
 	if link == "" {
 		out.Summary = "Nothing is left to pay on this."
 		out.NextStep = "There is no payment link because the balance is already settled. Confirm with get_invoice and tell the customer no payment is needed."

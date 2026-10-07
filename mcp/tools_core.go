@@ -75,9 +75,12 @@ type whoamiOutput struct {
 	ClientName     string   `json:"clientName,omitempty" jsonschema:"which AI client the customer connected"`
 	Scopes         []string `json:"scopes" jsonschema:"exactly what this connection was granted; anything not listed here you cannot do"`
 	CanDelete      bool     `json:"canDelete" jsonschema:"whether this connection may ask to delete things at all; even when true, every deletion still needs the account owner to approve it in a browser"`
-	CanPay         bool     `json:"canPay" jsonschema:"whether this connection may prepare payments; it can never complete one"`
-	CanSpendCredit bool     `json:"canSpendCredit" jsonschema:"whether this connection can spend account credit with no payment page; currently never true"`
-	Limits         []string `json:"limits" jsonschema:"the things this connection can never do, whatever it is asked"`
+	CanPay         bool     `json:"canPay" jsonschema:"whether this connection may prepare payments"`
+	CanSpendCredit bool     `json:"canSpendCredit" jsonschema:"whether this connection can pay with no payment page (prepaid balance, saved card, credit); true only for a partner key holding billing:spend"`
+	// SpendCapMinor and SpentThisMonthMinor bound what a spending connection may still pay.
+	SpendCapMinor       int64    `json:"spendCapMinor,omitempty" jsonschema:"the most this connection may pay without a payment page in a calendar month, in kobo"`
+	SpentThisMonthMinor int64    `json:"spentThisMonthMinor,omitempty" jsonschema:"what it has paid that way this month, in kobo"`
+	Limits              []string `json:"limits" jsonschema:"the things this connection can never do, whatever it is asked"`
 }
 
 func registerIdentityTools(r *Registry) {
@@ -93,21 +96,18 @@ func registerIdentityTools(r *Registry) {
 			name = fmt.Sprintf("%s, connected as %s", id.Email, id.ClientName)
 		}
 		return &whoamiOutput{
-			Summary:        fmt.Sprintf("Acting for %s.", name),
-			UserID:         id.UserID,
-			Email:          id.Email,
-			OrganisationID: id.OrganisationID,
-			ClientName:     id.ClientName,
-			Scopes:         id.Scopes,
-			CanDelete:      id.Has(scopes.PaaSDestroy) || id.Has(scopes.DBaaSDestroy),
-			CanPay:         id.Has(scopes.BillingCheckout),
-			CanSpendCredit: id.CanSpendWithoutCheckout,
-			Limits: []string{
-				"You cannot complete a payment. Checkout produces a link only the customer can pay on.",
-				"You cannot withdraw money or spend account credit.",
-				"You cannot reach anything administrative.",
-				"You cannot delete anything without the account owner approving that exact deletion in their browser.",
-			},
+			Summary:             fmt.Sprintf("Acting for %s.", name),
+			UserID:              id.UserID,
+			Email:               id.Email,
+			OrganisationID:      id.OrganisationID,
+			ClientName:          id.ClientName,
+			Scopes:              id.Scopes,
+			CanDelete:           id.Has(scopes.PaaSDestroy) || id.Has(scopes.DBaaSDestroy),
+			CanPay:              id.Has(scopes.BillingCheckout),
+			CanSpendCredit:      id.CanSpendWithoutCheckout,
+			SpendCapMinor:       id.SpendCapMinor,
+			SpentThisMonthMinor: id.SpentThisMonthMinor,
+			Limits:              whoamiLimits(id),
 		}, nil
 	})
 
@@ -277,4 +277,22 @@ func registerPlanTools(r *Registry) {
 		}
 		return &ListResult{Summary: summary, Count: len(items), Items: items}, nil
 	})
+}
+
+// whoamiLimits is what this connection can never do, stated so it is true for this connection.
+// A partner key holding billing:spend can pay without a payment page, within its monthly cap;
+// telling it otherwise would be as wrong as telling any other connection it can.
+func whoamiLimits(id *Identity) []string {
+	payment := "You cannot complete a payment. Checkout produces a link only the customer can pay on."
+	credit := "You cannot withdraw money or spend account credit."
+	if id != nil && id.CanSpendWithoutCheckout {
+		payment = fmt.Sprintf("You can pay without a payment page only with paymentSource \"balance\" or \"saved_card\", and only up to this key's monthly limit (%d kobo, %d used this month). Do it only when the account owner's own system asked for that purchase.", id.SpendCapMinor, id.SpentThisMonthMinor)
+		credit = "You cannot withdraw money. Credit and the prepaid balance can only be spent on TechBeaver, within the same monthly limit."
+	}
+	return []string{
+		payment,
+		credit,
+		"You cannot reach anything administrative.",
+		"You cannot delete anything without the account owner approving that exact deletion in their browser.",
+	}
 }

@@ -36,6 +36,8 @@ type fakeAPI struct {
 	checkouts int
 	// created counts apps actually created, i.e. invoices actually raised.
 	created int
+	// partner makes whoami answer as a partner key holding billing:spend.
+	partner bool
 
 	// gitAccess is what /paas/git/access answers. Nil means the route is not
 	// there at all, which is the older API a released binary may still meet.
@@ -119,11 +121,29 @@ func (f *fakeAPI) handler() http.Handler {
 
 		switch {
 		case path == "/mcp/whoami":
+			if f.partner {
+				ok(w, map[string]any{
+					"userId": "user-1", "email": "ada@example.test", "principal": "machine",
+					"clientName": "Partner backend", "scopes": f.scopes, "spendCapMinor": 5_000_000,
+					"spentThisMonthMinor": 1_250_000, "canSpendWithoutCheckout": true,
+				})
+				return
+			}
 			ok(w, map[string]any{
 				"userId": "user-1", "email": "ada@example.test", "principal": "machine",
 				"clientName": "Test client.Client", "scopes": f.scopes, "spendCapMinor": 0,
 				"canSpendWithoutCheckout": false,
 			})
+
+		case path == "/billing/prepaid-balance" && r.Method == http.MethodGet:
+			ok(w, map[string]any{"currency": "NGN", "balanceMinor": 2_000_000, "entries": []any{}})
+
+		case path == "/billing/prepaid-balance/top-ups" && r.Method == http.MethodPost:
+			if r.Header.Get("Idempotency-Key") == "" {
+				fail(w, http.StatusBadRequest, "idempotency_key_required", "this call needs an Idempotency-Key")
+				return
+			}
+			ok(w, map[string]any{"invoiceId": "inv-topup", "amountMinor": 500_000, "authorizationUrl": "https://checkout.paystack.test/topup"})
 
 		case path == "/paas/projects":
 			ok(w, []map[string]any{{"id": "proj-1", "name": "storefront", "regionCode": "eu"}})
@@ -208,6 +228,10 @@ func (f *fakeAPI) handler() http.Handler {
 			f.mu.Lock()
 			f.checkouts++
 			f.mu.Unlock()
+			if strings.Contains(f.lastBody(), `"paymentSource":"balance"`) {
+				ok(w, map[string]any{"fullySettled": true, "paidFromBalance": true})
+				return
+			}
 			ok(w, map[string]any{"authorizationUrl": "https://checkout.paystack.test/abc", "invoiceId": "inv-1"})
 
 		case path == "/mcp/confirmations" && r.Method == http.MethodPost:
@@ -1030,5 +1054,61 @@ func TestAnEmptyRootDirectoryMeansTheRepositoryRoot(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(resultText(res)), "repository root") {
 		t.Errorf("the result does not say it now builds from the root: %s", resultText(res))
+	}
+}
+
+// A partner key holding billing:spend can pay without a payment page, so whoami must not tell it
+// that it cannot, and must tell it the limit it works within.
+func TestWhoamiTellsAPartnerKeyWhatItMaySpend(t *testing.T) {
+	api := &fakeAPI{scopes: append(append([]string{}, scopes.Default...), scopes.BillingSpend), partner: true}
+	session, _ := connectAgent(t, api, "btk_test-token")
+
+	text := resultText(callTool(t, session, "whoami", map[string]any{}))
+	for _, phrase := range []string{`paymentSource \"balance\"`, "5000000 kobo", "1250000 used this month", "cannot withdraw money", "approving that exact deletion"} {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("a partner's whoami should say %q; got: %s", phrase, text)
+		}
+	}
+	if strings.Contains(text, "cannot complete a payment") {
+		t.Errorf("a partner key can pay from its balance; whoami must not say otherwise: %s", text)
+	}
+}
+
+func TestCheckoutPaidFromTheBalanceSaysSoAndOffersNoLink(t *testing.T) {
+	api := &fakeAPI{scopes: append(append([]string{}, scopes.Default...), scopes.BillingSpend), partner: true}
+	session, _ := connectAgent(t, api, "btk_test-token")
+
+	res := callTool(t, session, "create_checkout_link", map[string]any{
+		"resourceType": "app", "resourceId": "app-1", "paymentSource": "balance", "idempotencyKey": "key-bal",
+	})
+	text := resultText(res)
+	if !strings.Contains(api.lastBody(), `"paymentSource":"balance"`) {
+		t.Fatalf("paymentSource was not passed to the API: %s", api.lastBody())
+	}
+	if !strings.Contains(text, "Paid from the prepaid balance") || strings.Contains(text, "paystack.test") {
+		t.Errorf("a balance-paid checkout should say it is paid and give no link; got: %s", text)
+	}
+}
+
+func TestPrepaidBalanceToolsReachTheirRoutes(t *testing.T) {
+	api := &fakeAPI{scopes: scopes.Default}
+	session, _ := connectAgent(t, api, "btk_test-token")
+
+	if text := resultText(callTool(t, session, "get_prepaid_balance", map[string]any{})); !strings.Contains(text, "2000000") {
+		t.Errorf("get_prepaid_balance should return the balance; got: %s", text)
+	}
+	if api.countCalls("GET", "/api/v1/billing/prepaid-balance") != 1 {
+		t.Errorf("get_prepaid_balance did not read /billing/prepaid-balance")
+	}
+
+	text := resultText(callTool(t, session, "create_topup_link", map[string]any{"amountMinor": 500000, "idempotencyKey": "key-top"}))
+	if api.sawHeader("/api/v1/billing/prepaid-balance/top-ups", "Idempotency-Key") != "key-top" {
+		t.Errorf("create_topup_link must pass the idempotency key")
+	}
+	if !strings.Contains(api.lastBody(), `"amountMinor":500000`) {
+		t.Errorf("create_topup_link sent %s", api.lastBody())
+	}
+	if !strings.Contains(text, "https://checkout.paystack.test/topup") {
+		t.Errorf("create_topup_link should hand over the payment link; got: %s", text)
 	}
 }

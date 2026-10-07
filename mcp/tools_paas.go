@@ -37,6 +37,7 @@ type createAppInput struct {
 	BillingCycle   string            `json:"billingCycle,omitempty" jsonschema:"monthly or yearly"`
 	EnvVars        map[string]string `json:"envVars,omitempty" jsonschema:"environment variables the running app will see"`
 	BuildEnv       map[string]string `json:"buildEnv,omitempty" jsonschema:"environment variables available only while building"`
+	PaymentSource  string            `json:"paymentSource,omitempty" jsonschema:"leave empty for a payment link. Only a partner key (whoami canSpendCredit true) may set balance or saved_card to pay with no payment page; any other connection is refused"`
 	IdempotencyKey string            `json:"idempotencyKey" jsonschema:"a unique string you generate once for this creation; reuse exactly the same value if you retry, or the customer may be charged twice"`
 }
 
@@ -105,6 +106,7 @@ func registerAppTools(r *Registry) {
 		putIfSet(body, "framework", in.Framework)
 		putIfSet(body, "paasPlanId", in.PlanID)
 		putIfSet(body, "billingCycle", in.BillingCycle)
+		putIfSet(body, "paymentSource", in.PaymentSource)
 		if in.Port > 0 {
 			body["port"] = in.Port
 		}
@@ -124,7 +126,10 @@ func registerAppTools(r *Registry) {
 			Summary: fmt.Sprintf("Created app %q.", in.Name),
 			Result:  item,
 		}
-		if pick(item, "status") == "pending_payment" {
+		if paid := paidWithoutLink(item); paid != "" {
+			result.Summary = fmt.Sprintf("Created app %q and paid for it %s.", in.Name, paid)
+			result.NextStep = "It is paid and its first build is starting. Poll get_app to watch it deploy."
+		} else if pick(item, "status") == "pending_payment" {
 			result.NextStep = "This app is on a priced plan and will not deploy until it is paid for. Call create_checkout_link for it and give the customer the payment link; you cannot pay on their behalf."
 		}
 		return result, nil
