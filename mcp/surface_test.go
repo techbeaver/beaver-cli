@@ -58,7 +58,7 @@ func TestToolNamesAreStable(t *testing.T) {
 		"get_build_logs": true, "get_runtime_logs": true, "get_app_metrics": true, "get_app_instances": true,
 		"get_database_usage": true, "get_database_stats": true, "get_provision_logs": true,
 		"quote_purchase": true, "list_invoices": true, "get_invoice": true, "get_credit_balance": true,
-		"pay_invoice": true, "create_checkout_link": true,
+		"pay_invoice": true, "create_checkout_link": true, "get_prepaid_balance": true, "create_topup_link": true,
 		"delete_app": true, "delete_database": true, "delete_logical_database": true, "delete_project": true,
 		"remove_custom_domain": true, "restore_database": true, "get_restore_preview": true,
 		"plan_cleanup": true,

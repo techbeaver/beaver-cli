@@ -31,6 +31,9 @@ type Identity struct {
 	TokenPrefix    string   `json:"tokenPrefix,omitempty"`
 	Scopes         []string `json:"scopes"`
 	SpendCapMinor  int64    `json:"spendCapMinor"`
+	// SpentThisMonthMinor is what a partner key has spent this calendar month without a payment
+	// page. Zero for every other token.
+	SpentThisMonthMinor int64 `json:"spentThisMonthMinor"`
 
 	CanSpendWithoutCheckout bool `json:"canSpendWithoutCheckout"`
 }

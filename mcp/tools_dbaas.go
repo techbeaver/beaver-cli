@@ -68,6 +68,7 @@ func registerDatabaseTools(r *Registry) {
 		BillingCycle   string `json:"billingCycle,omitempty" jsonschema:"monthly or yearly"`
 		DatabaseName   string `json:"databaseName,omitempty" jsonschema:"the name of the first database inside the instance"`
 		Username       string `json:"username,omitempty" jsonschema:"the login role that will own it"`
+		PaymentSource  string `json:"paymentSource,omitempty" jsonschema:"leave empty for a payment link. Only a partner key (whoami canSpendCredit true) may set balance or saved_card to pay with no payment page; any other connection is refused"`
 		IdempotencyKey string `json:"idempotencyKey" jsonschema:"a unique string you generate once; reuse exactly the same value if you retry, or the customer may be charged twice"`
 	}) (*ActionResult, error) {
 		if err := requireIdempotencyKey(in.IdempotencyKey); err != nil {
@@ -75,6 +76,7 @@ func registerDatabaseTools(r *Registry) {
 		}
 		body := map[string]any{"name": in.Name, "dbaasPlanId": in.PlanID}
 		putIfSet(body, "billingCycle", in.BillingCycle)
+		putIfSet(body, "paymentSource", in.PaymentSource)
 		putIfSet(body, "databaseName", in.DatabaseName)
 		putIfSet(body, "username", in.Username)
 
@@ -84,6 +86,13 @@ func registerDatabaseTools(r *Registry) {
 			return nil, err
 		}
 		item, _ := client.DecodeObject(env)
+		if paid := paidWithoutLink(item); paid != "" {
+			return &ActionResult{
+				Summary:  fmt.Sprintf("Creating managed database %q, paid %s.", in.Name, paid),
+				Result:   item,
+				NextStep: "It is paid and provisioning. That takes a few minutes: poll get_database rather than creating another.",
+			}, nil
+		}
 		return &ActionResult{
 			Summary:  fmt.Sprintf("Creating managed database %q.", in.Name),
 			Result:   item,
