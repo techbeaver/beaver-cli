@@ -1,8 +1,10 @@
 package command
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,6 +33,7 @@ func newAppsCommand(env *Env) *cobra.Command {
 			args:  cobra.MaximumNArgs(1),
 			path:  appPath(""),
 		}),
+		newAppCreateCommand(env),
 		newAppDeployCommand(env),
 		actionCommand(env, actionSpec{use: "start [ID]", short: "Start an application", args: cobra.MaximumNArgs(1), path: appPath("/start")}),
 		actionCommand(env, actionSpec{use: "stop [ID]", short: "Stop an application", args: cobra.MaximumNArgs(1), path: appPath("/stop")}),
@@ -184,77 +187,229 @@ func newAppLogsCommand(env *Env) *cobra.Command {
 
 func newAppEnvCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{Use: "env", Short: "Read and change environment variables"}
-	cmd.AddCommand(
-		getCommand(env, getSpec{
-			use: "list [ID]", short: "Show the environment variables",
-			args: cobra.MaximumNArgs(1), path: appPath("/env"),
-		}),
-		newAppEnvSetCommand(env),
-		newAppEnvUnsetCommand(env),
-	)
+	cmd.AddCommand(newAppEnvListCommand(env), newAppEnvSetCommand(env), newAppEnvUnsetCommand(env))
 	return cmd
 }
 
-func newAppEnvSetCommand(env *Env) *cobra.Command {
-	return &cobra.Command{
-		Use:   "set KEY=VALUE [KEY=VALUE ...]",
-		Short: "Set environment variables",
-		Args:  cobra.MinimumNArgs(1),
+func newAppEnvListCommand(env *Env) *cobra.Command {
+	var showValues bool
+	cmd := &cobra.Command{
+		Use:   "list [ID]",
+		Short: "Show the environment variables",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := env.Authenticate(cmd.Context())
 			if err != nil {
 				return err
 			}
-			vars := map[string]string{}
-			for _, pair := range args {
-				key, value, ok := strings.Cut(pair, "=")
-				if !ok || key == "" {
-					return usageErr("%q is not KEY=VALUE", pair)
+			path, err := appPath("/env")(s, args)
+			if err != nil {
+				return err
+			}
+			vars, err := readEnv(cmd.Context(), s, path)
+			if err != nil {
+				return err
+			}
+			keys := make([]string, 0, len(vars))
+			for k := range vars {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			rows := make([]map[string]any, 0, len(keys))
+			for _, k := range keys {
+				value := "********"
+				if showValues {
+					value = vars[k]
 				}
-				vars[key] = value
+				rows = append(rows, map[string]any{"key": k, "value": value})
+			}
+			w, err := env.Writer()
+			if err != nil {
+				return err
+			}
+			return w.List(rows, "key", "value")
+		},
+	}
+	cmd.Flags().BoolVar(&showValues, "show-values", false, "print the values, which are secrets")
+	return cmd
+}
+
+func newAppEnvSetCommand(env *Env) *cobra.Command {
+	var replace bool
+	cmd := &cobra.Command{
+		Use:   "set KEY=VALUE [KEY=VALUE ...]",
+		Short: "Set environment variables, leaving the others as they are",
+		Long:  "Adds or updates the named variables and keeps every other one. --replace makes the named variables the whole set.",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			given, err := parseKeyValues(args)
+			if err != nil {
+				return err
+			}
+			s, err := env.Authenticate(cmd.Context())
+			if err != nil {
+				return err
 			}
 			path, err := appPath("/env")(s, nil)
 			if err != nil {
 				return err
 			}
-			envelope, err := s.Client.Do(cmd.Context(), s.Token, client.Request{
-				Method: http.MethodPatch, Path: path, Body: map[string]any{"variables": vars},
-			})
-			if err != nil {
-				return err
+			vars := given
+			if !replace {
+				if vars, err = readEnv(cmd.Context(), s, path); err != nil {
+					return fmt.Errorf("nothing was changed, because the current variables could not be read and setting replaces the whole set: %w", err)
+				}
+				for k, v := range given {
+					vars[k] = v
+				}
 			}
-			return renderObject(env, envelope)
+			return writeEnv(cmd.Context(), env, s, path, vars)
 		},
 	}
+	cmd.Flags().BoolVar(&replace, "replace", false, "make these the only variables, removing every other one")
+	return cmd
 }
 
 func newAppEnvUnsetCommand(env *Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "unset KEY [KEY ...]",
-		Short: "Remove environment variables",
+		Short: "Remove environment variables, leaving the others as they are",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := env.Authenticate(cmd.Context())
 			if err != nil {
 				return err
 			}
-			vars := map[string]any{}
-			for _, key := range args {
-				vars[key] = nil
-			}
 			path, err := appPath("/env")(s, nil)
 			if err != nil {
 				return err
 			}
-			envelope, err := s.Client.Do(cmd.Context(), s.Token, client.Request{
-				Method: http.MethodPatch, Path: path, Body: map[string]any{"variables": vars},
-			})
+			vars, err := readEnv(cmd.Context(), s, path)
+			if err != nil {
+				return fmt.Errorf("nothing was changed, because the current variables could not be read: %w", err)
+			}
+			for _, k := range args {
+				if _, ok := vars[k]; !ok {
+					fmt.Fprintf(env.Err, "%s was not set\n", k)
+				}
+				delete(vars, k)
+			}
+			return writeEnv(cmd.Context(), env, s, path, vars)
+		},
+	}
+}
+
+func parseKeyValues(pairs []string) (map[string]string, error) {
+	vars := map[string]string{}
+	for _, pair := range pairs {
+		key, value, ok := strings.Cut(pair, "=")
+		if !ok || key == "" {
+			return nil, usageErr("%q is not KEY=VALUE", pair)
+		}
+		vars[key] = value
+	}
+	return vars, nil
+}
+
+// readEnv returns the app's variables. The API answers a list of {key, value}.
+func readEnv(ctx context.Context, s *Session, path string) (map[string]string, error) {
+	envelope, err := s.Client.Do(ctx, s.Token, client.Request{Method: http.MethodGet, Path: path})
+	if err != nil {
+		return nil, err
+	}
+	rows, err := client.DecodeList(envelope)
+	if err != nil {
+		return nil, err
+	}
+	vars := make(map[string]string, len(rows))
+	for _, row := range rows {
+		k, _ := row["key"].(string)
+		if k == "" {
+			continue
+		}
+		v, _ := row["value"].(string)
+		vars[k] = v
+	}
+	return vars, nil
+}
+
+// writeEnv sends the complete set, which is what the endpoint stores.
+func writeEnv(ctx context.Context, env *Env, s *Session, path string, vars map[string]string) error {
+	if _, err := s.Client.Do(ctx, s.Token, client.Request{
+		Method: http.MethodPut, Path: path, Body: map[string]any{"envVars": vars},
+	}); err != nil {
+		return err
+	}
+	fmt.Fprintf(env.Err, "The app now has %d environment variable(s). Redeploy for a running app to see them.\n", len(vars))
+	return nil
+}
+
+func newAppCreateCommand(env *Env) *cobra.Command {
+	var (
+		repo, branch, rootDir, subdomain, framework, plan, cycle, key string
+		port                                                          int
+		envPairs, buildPairs                                          []string
+	)
+	cmd := &cobra.Command{
+		Use:   "create NAME",
+		Short: "Create an application and queue its first build",
+		Long:  "On a priced plan the app waits for payment; the response carries the invoice to pay.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			envVars, err := parseKeyValues(envPairs)
+			if err != nil {
+				return err
+			}
+			buildEnv, err := parseKeyValues(buildPairs)
+			if err != nil {
+				return err
+			}
+			s, err := env.Authenticate(cmd.Context())
+			if err != nil {
+				return err
+			}
+			project, err := s.Resolved.RequireProject()
+			if err != nil {
+				return err
+			}
+			body := map[string]any{"projectId": project, "name": args[0]}
+			putIfSet(body, "gitRepo", repo)
+			putIfSet(body, "branch", branch)
+			putIfSet(body, "rootDirectory", rootDir)
+			putIfSet(body, "subdomain", subdomain)
+			putIfSet(body, "framework", framework)
+			putIfSet(body, "paasPlanId", plan)
+			putIfSet(body, "billingCycle", cycle)
+			if port > 0 {
+				body["port"] = port
+			}
+			if len(envVars) > 0 {
+				body["envVars"] = envVars
+			}
+			if len(buildEnv) > 0 {
+				body["buildEnv"] = buildEnv
+			}
+			envelope, err := sendCharge(cmd.Context(), env, s, client.Request{
+				Method: http.MethodPost, Path: "/paas/apps", Body: body,
+			}, key)
 			if err != nil {
 				return err
 			}
 			return renderObject(env, envelope)
 		},
 	}
+	cmd.Flags().StringVar(&repo, "repo", "", "https URL of the git repository to deploy")
+	cmd.Flags().StringVar(&branch, "branch", "", "branch to deploy")
+	cmd.Flags().StringVar(&rootDir, "root-dir", "", "subdirectory to build, for a monorepo")
+	cmd.Flags().StringVar(&subdomain, "subdomain", "", "subdomain to publish on")
+	cmd.Flags().StringVar(&framework, "framework", "", "nixpacks or dockerfile")
+	cmd.Flags().IntVar(&port, "port", 0, "port the app listens on")
+	cmd.Flags().StringVar(&plan, "plan", "", "plan id (see beaver plans list)")
+	cmd.Flags().StringVar(&cycle, "billing-cycle", "", "monthly or yearly")
+	cmd.Flags().StringArrayVar(&envPairs, "env", nil, "KEY=VALUE for the running app; repeat for more")
+	cmd.Flags().StringArrayVar(&buildPairs, "build-env", nil, "KEY=VALUE available only while building; repeat for more")
+	addIdempotencyKeyFlag(cmd, &key)
+	return cmd
 }
 
 func newAppDomainsCommand(env *Env) *cobra.Command {
@@ -360,6 +515,7 @@ func newAppScaleCommand(env *Env) *cobra.Command {
 	var (
 		replicas int
 		quote    bool
+		key      string
 	)
 	cmd := &cobra.Command{
 		Use:   "scale [ID]",
@@ -391,9 +547,9 @@ func newAppScaleCommand(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			envelope, err := s.Client.Do(cmd.Context(), s.Token, client.Request{
+			envelope, err := sendCharge(cmd.Context(), env, s, client.Request{
 				Method: http.MethodPut, Path: path, Body: map[string]any{"replicas": replicas},
-			})
+			}, key)
 			if err != nil {
 				return err
 			}
@@ -402,6 +558,7 @@ func newAppScaleCommand(env *Env) *cobra.Command {
 	}
 	cmd.Flags().IntVar(&replicas, "replicas", 1, "how many instances to run")
 	cmd.Flags().BoolVar(&quote, "quote", false, "show what the change would cost without making it")
+	addIdempotencyKeyFlag(cmd, &key)
 	return cmd
 }
 

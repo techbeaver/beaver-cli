@@ -45,8 +45,18 @@ func ServeStdio(ctx context.Context, opts StdioOptions) error {
 		return err
 	}
 
+	return serve(ctx, deps, opts.Token, identity, &mcpsdk.StdioTransport{})
+}
+
+func serve(ctx context.Context, deps *Deps, token string, identity *Identity, transport mcpsdk.Transport) error {
 	server := AllTools().Build(deps, identity)
-	return server.Run(ctx, &mcpsdk.StdioTransport{})
+	session := SessionFor(token, identity)
+	server.AddReceivingMiddleware(func(next mcpsdk.MethodHandler) mcpsdk.MethodHandler {
+		return func(ctx context.Context, method string, req mcpsdk.Request) (mcpsdk.Result, error) {
+			return next(WithSession(ctx, session), method, req)
+		}
+	})
+	return server.Run(ctx, transport)
 }
 
 // SessionFor builds the session a locally run tool call acts under.

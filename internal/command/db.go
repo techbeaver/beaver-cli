@@ -49,15 +49,16 @@ func instancePath(suffix string) func(*Session, []string) (string, error) {
 
 func newDBCreateCommand(env *Env) *cobra.Command {
 	var (
-		plan    string
-		name    string
-		version string
+		plan, name, version, cycle, dbName, username, key string
 	)
 	cmd := &cobra.Command{
 		Use:   "create NAME",
 		Short: "Create a managed database",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if plan == "" {
+				return usageErr("--plan is required (see beaver plans list --db)")
+			}
 			s, err := env.Authenticate(cmd.Context())
 			if err != nil {
 				return err
@@ -69,26 +70,34 @@ func newDBCreateCommand(env *Env) *cobra.Command {
 			if name == "" {
 				name = args[0]
 			}
-			body := map[string]any{"name": name}
-			if plan != "" {
-				body["plan"] = plan
-			}
-			if version != "" {
-				body["version"] = version
-			}
-			envelope, err := s.Client.Do(cmd.Context(), s.Token, client.Request{
+			body := map[string]any{"name": name, "dbaasPlanId": plan}
+			putIfSet(body, "engineVersion", version)
+			putIfSet(body, "billingCycle", cycle)
+			putIfSet(body, "databaseName", dbName)
+			putIfSet(body, "username", username)
+			envelope, err := sendCharge(cmd.Context(), env, s, client.Request{
 				Method: http.MethodPost, Path: "/dbaas/projects/" + project + "/instances", Body: body,
-			})
+			}, key)
 			if err != nil {
 				return err
 			}
 			return renderObject(env, envelope)
 		},
 	}
-	cmd.Flags().StringVar(&plan, "plan", "", "plan to create it on (see beaver plans list --db)")
+	cmd.Flags().StringVar(&plan, "plan", "", "plan id to create it on (see beaver plans list --db)")
 	cmd.Flags().StringVar(&name, "name", "", "name, if it should differ from the argument")
 	cmd.Flags().StringVar(&version, "version", "", "Postgres major version")
+	cmd.Flags().StringVar(&cycle, "billing-cycle", "", "monthly or yearly")
+	cmd.Flags().StringVar(&dbName, "database-name", "", "name of the first database inside the instance")
+	cmd.Flags().StringVar(&username, "username", "", "login role that owns the first database")
+	addIdempotencyKeyFlag(cmd, &key)
 	return cmd
+}
+
+func putIfSet(body map[string]any, key, value string) {
+	if value != "" {
+		body[key] = value
+	}
 }
 
 func newDBLogsCommand(env *Env) *cobra.Command {

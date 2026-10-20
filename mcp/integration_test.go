@@ -217,8 +217,21 @@ func (f *fakeAPI) handler() http.Handler {
 		case path == "/paas/apps/app-1/custom-domains":
 			ok(w, []map[string]any{})
 
+		case path == "/paas/apps/app-1/env" && r.Method == http.MethodGet:
+			// The API answers a list of {key, value}, not an object.
+			ok(w, []map[string]any{
+				{"key": "DATABASE_URL", "value": "postgres://user:hunter2@db.example.test/app"},
+				{"key": "LOG_LEVEL", "value": "info"},
+			})
+
 		case path == "/paas/apps/app-1/env":
-			ok(w, map[string]any{"DATABASE_URL": "postgres://user:hunter2@db.example.test/app", "LOG_LEVEL": "info"})
+			var body map[string]any
+			_ = json.Unmarshal([]byte(f.lastBody()), &body)
+			if _, has := body["envVars"]; !has {
+				fail(w, http.StatusBadRequest, "missing_env_vars", "Request body must include an 'envVars' object")
+				return
+			}
+			ok(w, map[string]any{})
 
 		case path == "/paas/apps/app-1/checkout":
 			if r.Header.Get("Idempotency-Key") == "" {

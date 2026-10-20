@@ -41,7 +41,9 @@ beaver auth login --no-browser    # prints a code to enter on another device
 beaver apps list
 beaver apps deploy --wait
 beaver apps logs --follow
-beaver db create --plan starter
+beaver db create my-db --plan PLAN_ID      # plan ids: beaver plans list --db
+beaver apps env set LOG_LEVEL=debug        # other variables are kept; --replace drops them
+beaver apps env list                       # --show-values to print the secrets
 beaver billing invoices list
 ```
 

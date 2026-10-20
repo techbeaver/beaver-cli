@@ -68,6 +68,24 @@ type getEnvInput struct {
 	IncludeValues bool `json:"includeValues,omitempty" jsonschema:"set true ONLY if the customer asked for the actual values; the values are secrets and will appear in this conversation"`
 }
 
+// readEnvVars returns the app's variables; the endpoint answers a list of {key, value}.
+func readEnvVars(ctx context.Context, deps *Deps, call *Call, appID string) (map[string]string, error) {
+	items, err := apiList(ctx, deps, call, "/paas/apps/"+url.PathEscape(appID)+"/env", nil)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(items))
+	for _, item := range items {
+		key := pick(item, "key", "name")
+		if key == "" {
+			continue
+		}
+		value, _ := item["value"].(string)
+		out[key] = value
+	}
+	return out, nil
+}
+
 func registerAppTools(r *Registry) {
 	register(r, toolSpec{
 		Name:     "get_app",
@@ -285,9 +303,13 @@ func registerAppTools(r *Registry) {
 		ReadOnly: true, Idempotent: true,
 		Description: "Which environment variables an app has. Values are hidden unless you explicitly ask for them, because they are secrets and this conversation may be read by someone else. Ask for values only when the customer asked for a value.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in getEnvInput) (*ObjectResult, error) {
-		item, err := apiGet(ctx, deps, call, "/paas/apps/"+url.PathEscape(in.AppID)+"/env", nil)
+		vars, err := readEnvVars(ctx, deps, call, in.AppID)
 		if err != nil {
 			return nil, err
+		}
+		item := make(map[string]any, len(vars))
+		for k, v := range vars {
+			item[k] = v
 		}
 		if !in.IncludeValues {
 			item = redactValues(item)
@@ -306,15 +328,24 @@ func registerAppTools(r *Registry) {
 		Name:        "set_env_vars",
 		Title:       "Set environment variables",
 		Scopes:      []string{scopes.PaaSWrite},
-		Description: "Sets or updates environment variables. Variables not named are left alone. The app has to be redeployed for the change to reach the running container.",
+		Description: "Sets or updates environment variables. Variables you do not name are left alone: this reads the app's current set and merges yours into it. The app has to be redeployed for the change to reach the running container.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in setEnvInput) (*ActionResult, error) {
-		env, err := apiSend(ctx, deps, call, http.MethodPatch, "/paas/apps/"+url.PathEscape(in.AppID)+"/env", in.Vars, nil)
+		current, err := readEnvVars(ctx, deps, call, in.AppID)
+		if err != nil {
+			return nil, fmt.Errorf("could not read the app's current environment variables, so nothing was changed: %w."+
+				" Setting variables replaces the whole set, so this tool will not write without knowing what is already there", err)
+		}
+		for k, v := range in.Vars {
+			current[k] = v
+		}
+		env, err := apiSend(ctx, deps, call, http.MethodPatch, "/paas/apps/"+url.PathEscape(in.AppID)+"/env",
+			map[string]any{"envVars": current}, nil)
 		if err != nil {
 			return nil, err
 		}
 		item, _ := client.DecodeObject(env)
 		return &ActionResult{
-			Summary:  fmt.Sprintf("Updated %d environment variable(s).", len(in.Vars)),
+			Summary:  fmt.Sprintf("Updated %d environment variable(s); the app now has %d.", len(in.Vars), len(current)),
 			Result:   redactValues(item),
 			NextStep: "Call deploy_app for the running app to pick these up.",
 		}, nil
