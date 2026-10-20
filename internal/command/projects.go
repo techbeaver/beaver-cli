@@ -35,14 +35,14 @@ func newProjectCreateCommand(env *Env) *cobra.Command {
 		Short: "Create a project",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if region == "" {
+				return usageErr("--region is required (see beaver regions list)")
+			}
 			s, err := env.Authenticate(cmd.Context())
 			if err != nil {
 				return err
 			}
-			body := map[string]any{"name": args[0]}
-			if region != "" {
-				body["region"] = region
-			}
+			body := map[string]any{"name": args[0], "regionCode": region}
 			envelope, err := s.Client.Do(cmd.Context(), s.Token, client.Request{
 				Method: http.MethodPost, Path: "/paas/projects", Body: body,
 			})
@@ -52,7 +52,7 @@ func newProjectCreateCommand(env *Env) *cobra.Command {
 			return renderObject(env, envelope)
 		},
 	}
-	cmd.Flags().StringVar(&region, "region", "", "region to create it in (see beaver regions list)")
+	cmd.Flags().StringVar(&region, "region", "", "region code to create it in (see beaver regions list)")
 	return cmd
 }
 
