@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -77,5 +78,21 @@ func TestSettingOneVariableKeepsTheOthers(t *testing.T) {
 	}
 	if strings.Contains(resultText(res), "hunter2") {
 		t.Error("the result leaked a value")
+	}
+}
+
+func TestRestartAppRollsWithoutStopping(t *testing.T) {
+	api := &fakeAPI{scopes: scopes.All}
+	session := connectLocal(t, api)
+
+	res := callTool(t, session, "restart_app", map[string]any{"appId": "app-1"})
+	if res.IsError {
+		t.Fatalf("restart_app: %s", resultText(res))
+	}
+	if api.countCalls(http.MethodPost, "/api/v1/paas/apps/app-1/restart") != 1 {
+		t.Error("restart_app did not ask for a rolling restart")
+	}
+	if api.countCalls(http.MethodPost, "/api/v1/paas/apps/app-1/stop") != 0 {
+		t.Error("restart_app stopped the app")
 	}
 }

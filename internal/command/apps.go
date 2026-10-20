@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -113,25 +114,26 @@ func newAppDeployCommand(env *Env) *cobra.Command {
 func newAppRestartCommand(env *Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "restart [ID]",
-		Short: "Stop and start an application",
+		Short: "Replace every instance with a fresh one, without going offline",
+		Long:  "New instances start before old ones stop. A stopped app is refused: use beaver apps start.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := env.Authenticate(cmd.Context())
 			if err != nil {
 				return err
 			}
-			for _, suffix := range []string{"/stop", "/start"} {
-				path, err := appPath(suffix)(s, args)
-				if err != nil {
-					return err
-				}
-				if _, err := s.Client.Do(cmd.Context(), s.Token, client.Request{
-					Method: http.MethodPost, Path: path,
-				}); err != nil {
-					return err
-				}
+			path, err := appPath("/restart")(s, args)
+			if err != nil {
+				return err
 			}
-			fmt.Fprintln(env.Err, "Restarted.")
+			if _, err := s.Client.Do(cmd.Context(), s.Token, client.Request{Method: http.MethodPost, Path: path}); err != nil {
+				var apiErr *client.APIError
+				if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound && (apiErr.Code == "" || apiErr.Code == "upstream_not_json") {
+					return fmt.Errorf("this TechBeaver API has no rolling restart yet; use beaver apps deploy to roll the app instead of stopping it: %w", err)
+				}
+				return err
+			}
+			fmt.Fprintln(env.Err, "Restarting: new instances replace the old ones one at a time.")
 			return nil
 		},
 	}
@@ -340,7 +342,7 @@ func writeEnv(ctx context.Context, env *Env, s *Session, path string, vars map[s
 	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(env.Err, "The app now has %d environment variable(s). Redeploy for a running app to see them.\n", len(vars))
+	fmt.Fprintf(env.Err, "The app now has %d environment variable(s). A running app rolls out with them on its own; there is nothing to restart.\n", len(vars))
 	return nil
 }
 
