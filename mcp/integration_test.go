@@ -217,6 +217,9 @@ func (f *fakeAPI) handler() http.Handler {
 		case path == "/paas/apps/app-1/custom-domains":
 			ok(w, []map[string]any{})
 
+		case path == "/paas/apps/app-1/restart" && r.Method == http.MethodPost:
+			ok(w, map[string]any{})
+
 		case path == "/paas/apps/app-1/env" && r.Method == http.MethodGet:
 			// The API answers a list of {key, value}, not an object.
 			ok(w, []map[string]any{

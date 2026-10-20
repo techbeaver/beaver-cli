@@ -270,7 +270,8 @@ func TestACommandNeedingAProjectSaysEveryWayToSupplyOne(t *testing.T) {
 	}
 }
 
-func TestRestartIsAStopThenAStart(t *testing.T) {
+// TestRestartRollsTheAppAndNeverStopsIt guards the 2026-10-20 outage: a stop-then-start restart whose start failed.
+func TestRestartRollsTheAppAndNeverStopsIt(t *testing.T) {
 	api := newFakeAPI(t, func(_ *fakeAPI, w http.ResponseWriter, _ *http.Request) {
 		writeEnvelope(w, 200, map[string]any{})
 	})
@@ -279,14 +280,38 @@ func TestRestartIsAStopThenAStart(t *testing.T) {
 	if err := run(t, env, "apps", "restart", "app-1"); err != nil {
 		t.Fatal(err)
 	}
-	if api.calls(http.MethodPost, "/paas/apps/app-1/stop") != 1 {
-		t.Fatal("restart did not stop the app")
+	if api.calls(http.MethodPost, "/paas/apps/app-1/restart") != 1 {
+		t.Fatal("restart did not ask for a rolling restart")
 	}
-	if api.calls(http.MethodPost, "/paas/apps/app-1/start") != 1 {
-		t.Fatal("restart did not start the app")
+	if api.calls(http.MethodPost, "/paas/apps/app-1/stop") != 0 {
+		t.Fatal("restart stopped the app")
 	}
-	if api.requests[len(api.requests)-1].path != "/paas/apps/app-1/start" {
-		t.Fatal("start must come after stop")
+}
+
+func TestRestartOnAnOlderAPIDoesNotFallBackToStopping(t *testing.T) {
+	api := newFakeAPI(t, func(_ *fakeAPI, w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("Cannot POST /api/v1/paas/apps/app-1/restart"))
+	})
+	env, _, _ := newTestEnv(t, api.URL)
+
+	err := run(t, env, "apps", "restart", "app-1")
+	if err == nil || !strings.Contains(err.Error(), "beaver apps deploy") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(api.requests) != 1 {
+		t.Errorf("made %d calls; a missing restart must not turn into a stop", len(api.requests))
+	}
+}
+
+func TestRestartingAStoppedAppSaysToStartIt(t *testing.T) {
+	api := newFakeAPI(t, func(_ *fakeAPI, w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"status":409,"success":false,"message":"The app is stopped. Start it instead.","code":"app_stopped"}`))
+	})
+	env, _, _ := newTestEnv(t, api.URL)
+	if err := run(t, env, "apps", "restart", "app-1"); err == nil || !strings.Contains(err.Error(), "Start it instead") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

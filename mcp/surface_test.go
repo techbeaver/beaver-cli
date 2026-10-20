@@ -45,7 +45,7 @@ func TestToolNamesAreStable(t *testing.T) {
 		"list_apps": true, "get_app": true, "create_app": true, "deploy_app": true, "rollback_app": true,
 		"list_deployments": true, "set_root_directory": true,
 		"check_repo_access": true, "list_git_connections": true,
-		"stop_app": true, "start_app": true, "undelete_app": true,
+		"stop_app": true, "start_app": true, "restart_app": true, "undelete_app": true,
 		"get_env_vars": true, "set_env_vars": true, "set_app_port": true, "set_start_command": true,
 		"list_custom_domains": true, "add_custom_domain": true, "verify_custom_domain": true,
 		"list_databases": true, "get_database": true, "create_database": true, "get_connection_info": true,

@@ -297,6 +297,20 @@ func registerAppTools(r *Registry) {
 	})
 
 	register(r, toolSpec{
+		Name:        "restart_app",
+		Title:       "Restart an app",
+		Scopes:      []string{scopes.PaaSWrite},
+		Description: "Replaces every instance of a running app with a fresh one, starting the new before stopping the old, so it stays online. Use this to restart; never stop_app then start_app, which takes the app offline. A stopped app is refused: use start_app. Changing environment variables already rolls the app, so it needs no restart afterwards.",
+	}, func(ctx context.Context, deps *Deps, call *Call, in appIDInput) (*ActionResult, error) {
+		env, err := apiSend(ctx, deps, call, http.MethodPost, "/paas/apps/"+url.PathEscape(in.AppID)+"/restart", map[string]any{}, nil)
+		if err != nil {
+			return nil, err
+		}
+		item, _ := client.DecodeObject(env)
+		return &ActionResult{Summary: "App restarting; new instances replace the old ones one at a time.", Result: item}, nil
+	})
+
+	register(r, toolSpec{
 		Name:     "get_env_vars",
 		Title:    "Read environment variables",
 		Scopes:   []string{scopes.PaaSRead},
