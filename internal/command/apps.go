@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/techbeaver/beaver-cli/client"
+	"github.com/techbeaver/beaver-cli/scopes"
 )
 
 func newAppsCommand(env *Env) *cobra.Command {
@@ -25,7 +27,7 @@ func newAppsCommand(env *Env) *cobra.Command {
 				if err != nil {
 					return "", err
 				}
-				return "/paas/projects/" + project + "/apps", nil
+				return "/paas/projects/" + url.PathEscape(project) + "/apps", nil
 			},
 		}),
 		getCommand(env, getSpec{
@@ -67,7 +69,7 @@ func appPath(suffix string) func(*Session, []string) (string, error) {
 				return "", err
 			}
 		}
-		return "/paas/apps/" + id + suffix, nil
+		return "/paas/apps/" + url.PathEscape(id) + suffix, nil
 	}
 }
 
@@ -189,16 +191,19 @@ func newAppLogsCommand(env *Env) *cobra.Command {
 
 func newAppEnvCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{Use: "env", Short: "Read and change environment variables"}
-	cmd.AddCommand(newAppEnvListCommand(env), newAppEnvSetCommand(env), newAppEnvUnsetCommand(env))
+	cmd.AddCommand(newAppEnvListCommand(env), newAppEnvSetCommand(env), newAppEnvUnsetCommand(env), newAppEnvCheckCommand(env))
 	return cmd
 }
 
 func newAppEnvListCommand(env *Env) *cobra.Command {
-	var showValues bool
+	var reveal, showValues bool
 	cmd := &cobra.Command{
 		Use:   "list [ID]",
-		Short: "Show the environment variables",
-		Args:  cobra.MaximumNArgs(1),
+		Short: "Show the environment variables (values are masked)",
+		Long: "Shows the names of the variables. Values are masked unless you pass --reveal, which needs a\n" +
+			"credential granted secrets:read. To test a value without revealing anything, use\n" +
+			"beaver apps env check NAME.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := env.Authenticate(cmd.Context())
 			if err != nil {
@@ -208,7 +213,8 @@ func newAppEnvListCommand(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			vars, err := readEnv(cmd.Context(), s, path)
+			reveal = reveal || showValues
+			vars, err := readEnv(cmd.Context(), s, path, reveal)
 			if err != nil {
 				return err
 			}
@@ -219,8 +225,8 @@ func newAppEnvListCommand(env *Env) *cobra.Command {
 			sort.Strings(keys)
 			rows := make([]map[string]any, 0, len(keys))
 			for _, k := range keys {
-				value := "********"
-				if showValues {
+				value := maskedValue
+				if reveal {
 					value = vars[k]
 				}
 				rows = append(rows, map[string]any{"key": k, "value": value})
@@ -232,17 +238,31 @@ func newAppEnvListCommand(env *Env) *cobra.Command {
 			return w.List(rows, "key", "value")
 		},
 	}
-	cmd.Flags().BoolVar(&showValues, "show-values", false, "print the values, which are secrets")
+	cmd.Flags().BoolVar(&reveal, "reveal", false, "print the values, which are secrets (needs the secrets:read scope)")
+	cmd.Flags().BoolVar(&showValues, "show-values", false, "same as --reveal")
+	_ = cmd.Flags().MarkDeprecated("show-values", "use --reveal")
 	return cmd
 }
 
+// EnvWithheldMarker sent as a value on a write means "keep the stored value". It lets a client
+// that can only read names rewrite the set without ever holding a secret.
+const EnvWithheldMarker = "[withheld]"
+
+// maskedValue is what a value is shown as. It is printed whatever the API sent,
+// so a masked or an unmasked reply can never reach the terminal by accident.
+const maskedValue = "********"
+
 func newAppEnvSetCommand(env *Env) *cobra.Command {
-	var replace bool
+	var (
+		replace, assumeYes bool
+		wait               time.Duration
+	)
 	cmd := &cobra.Command{
 		Use:   "set KEY=VALUE [KEY=VALUE ...]",
 		Short: "Set environment variables, leaving the others as they are",
-		Long:  "Adds or updates the named variables and keeps every other one. --replace makes the named variables the whole set.",
-		Args:  cobra.MinimumNArgs(1),
+		Long: "Adds or updates the named variables and keeps every other one, with no need to read them.\n" +
+			"--replace makes the named variables the whole set, which needs your approval in a browser.",
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			given, err := parseKeyValues(args)
 			if err != nil {
@@ -256,27 +276,35 @@ func newAppEnvSetCommand(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			vars := given
 			if !replace {
-				if vars, err = readEnv(cmd.Context(), s, path); err != nil {
-					return fmt.Errorf("nothing was changed, because the current variables could not be read and setting replaces the whole set: %w", err)
+				if _, err := s.Client.Do(cmd.Context(), s.Token, client.Request{
+					Method: http.MethodPost, Path: path + "/upsert", Body: map[string]any{"envVars": given},
+				}); err != nil {
+					return explainEnvRouteUnsupported(err, "setting named variables (POST /env/upsert)")
 				}
-				for k, v := range given {
-					vars[k] = v
-				}
+				fmt.Fprintf(env.Err, "Set %d environment variable(s); the others are untouched. A running app rolls out with them on its own.\n", len(given))
+				return nil
 			}
-			return writeEnv(cmd.Context(), env, s, path, vars)
+			return writeEnv(cmd.Context(), env, s, path, given, sortedKeys(given), assumeYes, wait)
 		},
 	}
 	cmd.Flags().BoolVar(&replace, "replace", false, "make these the only variables, removing every other one")
+	cmd.Flags().BoolVar(&assumeYes, "yes", false, "skip this CLI's prompt (the browser approval still applies)")
+	cmd.Flags().DurationVar(&wait, "wait", 0, "how long to wait for approval before exiting 6")
 	return cmd
 }
 
 func newAppEnvUnsetCommand(env *Env) *cobra.Command {
-	return &cobra.Command{
+	var (
+		assumeYes bool
+		wait      time.Duration
+	)
+	cmd := &cobra.Command{
 		Use:   "unset KEY [KEY ...]",
 		Short: "Remove environment variables, leaving the others as they are",
-		Args:  cobra.MinimumNArgs(1),
+		Long: "Removes each named variable with its own call, so a variable added meanwhile is never lost.\n" +
+			"Each removal needs your approval in a browser. Names that are not set are skipped.",
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := env.Authenticate(cmd.Context())
 			if err != nil {
@@ -286,19 +314,135 @@ func newAppEnvUnsetCommand(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			vars, err := readEnv(cmd.Context(), s, path)
+			current, err := readEnv(cmd.Context(), s, path, false)
 			if err != nil {
 				return fmt.Errorf("nothing was changed, because the current variables could not be read: %w", err)
 			}
+			id, _ := url.PathUnescape(strings.TrimSuffix(strings.TrimPrefix(path, "/paas/apps/"), "/env"))
+			var existing []string
+			seen := map[string]bool{}
 			for _, k := range args {
-				if _, ok := vars[k]; !ok {
-					fmt.Fprintf(env.Err, "%s was not set\n", k)
+				if seen[k] {
+					continue
 				}
-				delete(vars, k)
+				seen[k] = true
+				if _, ok := current[k]; !ok {
+					fmt.Fprintf(env.Err, "%s was not set\n", k)
+					continue
+				}
+				existing = append(existing, k)
 			}
-			return writeEnv(cmd.Context(), env, s, path, vars)
+			if len(existing) == 0 {
+				fmt.Fprintln(env.Err, "Nothing to remove.")
+				return nil
+			}
+			for _, k := range existing {
+				if _, err := RunDestructive(cmd.Context(), env, s, DestructiveRequest{
+					Method: http.MethodDelete, Path: path + "/" + url.PathEscape(k),
+					Action: "remove the environment variable", ResourceType: "app", ResourceID: id, ResourceName: id,
+					Preview:      map[string]any{"variable": k},
+					RecoveryNote: "The variable's value is not kept. Set it again to restore it.",
+				}, assumeYes, wait); err != nil {
+					return explainEnvRouteUnsupported(err, "removing one variable (DELETE /env/KEY)")
+				}
+				fmt.Fprintf(env.Err, "Removed %s.\n", k)
+			}
+			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&assumeYes, "yes", false, "skip this CLI's prompt (the browser approval still applies)")
+	cmd.Flags().DurationVar(&wait, "wait", 0, "how long to wait for approval before exiting 6")
+	return cmd
+}
+
+// explainEnvRouteUnsupported turns what an older API answers for a route it does not have into a
+// clear failure. The caller never falls back to PATCH or PUT: on an old API those replace the
+// whole set.
+func explainEnvRouteUnsupported(err error, what string) error {
+	if !envRouteMissing(err) {
+		return err
+	}
+	return fmt.Errorf("this server does not support %s yet, so nothing was changed. Update the platform, or use beaver apps env set --replace to write the whole set: %w", what, err)
+}
+
+func envRouteMissing(err error) bool {
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	msg := strings.ToLower(apiErr.Message)
+	switch apiErr.Code {
+	case "route_not_permitted", "upstream_not_json", "confirmation_not_applicable":
+		return true
+	}
+	if strings.Contains(msg, "allowlist") {
+		return true
+	}
+	return apiErr.StatusCode == http.StatusNotFound && apiErr.Code == "" && !strings.Contains(msg, "not found")
+}
+
+// newAppEnvCheckCommand answers "is this the value?" without revealing one.
+// The value is read from stdin or a no-echo prompt and never from an argument,
+// which other users on the machine can see.
+func newAppEnvCheckCommand(env *Env) *cobra.Command {
+	var build bool
+	cmd := &cobra.Command{
+		Use:   "check NAME [ID]",
+		Short: "Check whether a variable is set and whether it holds a value, without revealing it",
+		Long: "Reads the value from stdin, or from a prompt that does not echo, and asks the platform whether\n" +
+			"NAME is set and equal to it. The stored value is never sent back.\n\n" +
+			"  printf %s \"$VALUE\" | beaver apps env check DATABASE_URL",
+		Args: cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			if name == "" || strings.Contains(name, "=") {
+				return usageErr("%q is not a variable name. The value is read from stdin, not given as an argument", name)
+			}
+			value, err := readSecret(cmd.Context(), env, "Value to check (not echoed): ", true)
+			if err != nil {
+				return err
+			}
+			s, err := env.Authenticate(cmd.Context())
+			if err != nil {
+				return err
+			}
+			path, err := appPath("/env/check")(s, args[1:])
+			if err != nil {
+				return err
+			}
+			kind := "runtime"
+			if build {
+				kind = "build"
+			}
+			envelope, err := s.Client.Do(cmd.Context(), s.Token, client.Request{
+				Method: http.MethodPost, Path: path,
+				Body: map[string]any{"name": name, "value": value, "kind": kind},
+			})
+			if err != nil {
+				return err
+			}
+			obj, err := client.DecodeObject(envelope)
+			if err != nil {
+				return err
+			}
+			w, err := env.Writer()
+			if err != nil {
+				return err
+			}
+			return w.Object(map[string]any{"name": name, "kind": kind, "set": obj["set"], "matches": obj["matches"]})
+		},
+	}
+	cmd.Flags().BoolVar(&build, "build", false, "check a build-time variable instead of a runtime one")
+	return cmd
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func parseKeyValues(pairs []string) (map[string]string, error) {
@@ -314,10 +458,16 @@ func parseKeyValues(pairs []string) (map[string]string, error) {
 }
 
 // readEnv returns the app's variables. The API answers a list of {key, value}.
-func readEnv(ctx context.Context, s *Session, path string) (map[string]string, error) {
-	envelope, err := s.Client.Do(ctx, s.Token, client.Request{Method: http.MethodGet, Path: path})
+// With reveal the values are real and the call needs secrets:read; without it
+// they are masked and only the names can be relied on.
+func readEnv(ctx context.Context, s *Session, path string, reveal bool) (map[string]string, error) {
+	req := client.Request{Method: http.MethodGet, Path: path}
+	if reveal {
+		req.Query = url.Values{"reveal": {"true"}}
+	}
+	envelope, err := s.Client.Do(ctx, s.Token, req)
 	if err != nil {
-		return nil, err
+		return nil, explainSecretsScope(err)
 	}
 	rows, err := client.DecodeList(envelope)
 	if err != nil {
@@ -335,11 +485,32 @@ func readEnv(ctx context.Context, s *Session, path string) (map[string]string, e
 	return vars, nil
 }
 
-// writeEnv sends the complete set, which is what the endpoint stores.
-func writeEnv(ctx context.Context, env *Env, s *Session, path string, vars map[string]string) error {
-	if _, err := s.Client.Do(ctx, s.Token, client.Request{
+// explainSecretsScope turns the API's secrets_scope_required into the command
+// that fixes it. Any other error passes through.
+func explainSecretsScope(err error) error {
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != SecretsScopeRequired {
+		return err
+	}
+	granted := append(append([]string{}, scopes.Default...), scopes.SecretsRead)
+	return fmt.Errorf("%w\nThis credential was not granted %s. Sign in again with it: beaver auth login --scope %s",
+		err, scopes.SecretsRead, strings.Join(granted, ","))
+}
+
+// SecretsScopeRequired is the API's code for a reveal without secrets:read.
+const SecretsScopeRequired = "secrets_scope_required"
+
+// writeEnv sends the complete set, which is what the endpoint stores. The
+// platform requires a browser approval for it, bound to exactly this body.
+// Only the names that change are shown to the approver, never values.
+func writeEnv(ctx context.Context, env *Env, s *Session, path string, vars map[string]string, changed []string, assumeYes bool, wait time.Duration) error {
+	id, _ := url.PathUnescape(strings.TrimSuffix(strings.TrimPrefix(path, "/paas/apps/"), "/env"))
+	if _, err := RunDestructive(ctx, env, s, DestructiveRequest{
 		Method: http.MethodPut, Path: path, Body: map[string]any{"envVars": vars},
-	}); err != nil {
+		Action: "change the environment of", ResourceType: "app", ResourceID: id, ResourceName: id,
+		Preview:      map[string]any{"variables changed": strings.Join(changed, ", "), "variables after": len(vars)},
+		RecoveryNote: "The previous environment variables are not kept. A running app rolls out with the new ones.",
+	}, assumeYes, wait); err != nil {
 		return err
 	}
 	fmt.Fprintf(env.Err, "The app now has %d environment variable(s). A running app rolls out with them on its own; there is nothing to restart.\n", len(vars))
@@ -463,7 +634,7 @@ func newAppDomainVerifyCommand(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			path, err := appPath("/custom-domains/"+args[0]+"/verify")(s, nil)
+			path, err := appPath("/custom-domains/"+url.PathEscape(args[0])+"/verify")(s, nil)
 			if err != nil {
 				return err
 			}
@@ -492,7 +663,7 @@ func newAppDomainRemoveCommand(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			path, err := appPath("/custom-domains/"+args[0])(s, nil)
+			path, err := appPath("/custom-domains/"+url.PathEscape(args[0]))(s, nil)
 			if err != nil {
 				return err
 			}
@@ -614,7 +785,7 @@ func newAppDeleteCommand(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			id := strings.TrimPrefix(path, "/paas/apps/")
+			id, _ := url.PathUnescape(strings.TrimPrefix(path, "/paas/apps/"))
 			envelope, err := RunDestructive(cmd.Context(), env, s, DestructiveRequest{
 				Method: http.MethodDelete, Path: path,
 				Action: "delete", ResourceType: "app", ResourceID: id, ResourceName: id,

@@ -57,7 +57,7 @@ notarize:
 #
 # Signs checksums.txt rather than each binary. Signing the binaries directly
 # names every signature after the binary, and the binary is called `beaver` on
-# all five targets — so five artifacts collide on one asset name and the upload
+# all five targets, so five artifacts collide on one asset name and the upload
 # fails after everything is already built. checksums.txt covers every archive,
 # so one signature over it proves the lot.
 signs:
@@ -101,18 +101,23 @@ release:
     the GitHub Actions run that built it rather than to a key we hold. Verify
     the checksum file, then check your archive against it.
 
+    Replace vX.Y.Z with the tag you downloaded.
+
     ```sh
     cosign verify-blob \
       --certificate checksums.txt.pem \
       --signature   checksums.txt.sig \
-      --certificate-identity-regexp 'https://github.com/techbeaver/beaver-cli' \
+      --certificate-identity https://github.com/techbeaver/beaver-cli/.github/workflows/release.yml@refs/tags/vX.Y.Z \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com \
       checksums.txt
 
     sha256sum -c checksums.txt --ignore-missing
     ```
 
-    install.sh already checks the archive against checksums.txt for you.
+    install.sh and install.ps1 check the archive against checksums.txt for you, and
+    verify this signature too when cosign is installed. A missing or mismatching
+    checksum stops the install. Set BEAVER_REQUIRE_SIGNATURE=1 to refuse to install
+    without cosign.
 
 changelog:
   sort: asc

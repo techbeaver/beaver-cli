@@ -17,6 +17,11 @@ Windows, in PowerShell:
 irm https://techbeaver.io/install.ps1 | iex
 ```
 
+Both installers refuse to install when the checksum is missing or does not match. When `cosign` is
+installed they also verify the signature on `checksums.txt` against this repository's release workflow.
+Without `cosign` they say so and continue on the checksum alone, which shows the download is intact but
+not who built it. Set `BEAVER_REQUIRE_SIGNATURE=1` to refuse to continue without `cosign`.
+
 Prefer not to pipe a script into a shell? That is a reasonable position. Download the binary for your
 platform from [Releases](https://github.com/techbeaver/beaver-cli/releases), verify the checksum and
 signature as shown there, `chmod +x` it and move it onto your `PATH`.
@@ -43,7 +48,8 @@ beaver apps deploy --wait
 beaver apps logs --follow
 beaver db create my-db --plan PLAN_ID      # plan ids: beaver plans list --db
 beaver apps env set LOG_LEVEL=debug        # other variables are kept; --replace drops them
-beaver apps env list                       # --show-values to print the secrets
+beaver apps env list                       # names only, values are masked; --reveal needs secrets:read
+printf %s "$VALUE" | beaver apps env check DATABASE_URL   # is it set, does it match, without revealing it
 beaver billing invoices list
 ```
 
@@ -104,6 +110,14 @@ credential, so a local AI client can drive your infrastructure without a hosted 
 }
 ```
 
+What the client can reach is decided by whoever starts the server, never by the model:
+
+- `beaver mcp --read-only` offers only the tools that change nothing.
+- `beaver mcp --scope projects:read,paas:read` offers only tools whose required scopes are all listed.
+- `beaver mcp --allow-secrets` also offers the tools that put secret values (environment variables,
+  database passwords) into the conversation. They are off by default, and need a credential granted
+  `secrets:read`.
+
 For a hosted connection instead, point your client at `https://mcp.techbeaver.io/mcp` and approve it
 in the browser.
 
@@ -113,6 +127,16 @@ in the browser.
   secret is shipped, because a distributed binary cannot keep one.
 - Tokens go in your platform keychain. Where there is none, a `0600` file, and a credential file with
   looser permissions is refused rather than warned about.
+- A token is only ever sent to the host it was issued for. `beaver.toml` cannot set the API host (the
+  CLI warns and ignores it), so a cloned repository cannot redirect your credentials. Plain `http` is
+  accepted only for `localhost`.
+- Secret values are masked unless you ask for them with `--reveal`, which needs a credential granted
+  `secrets:read`. That scope is never in the default grant: sign in with
+  `beaver auth login --scope ...,secrets:read` when you need it.
+- In a CI job the runner identity is only exchanged with the default host. Running your own deployment
+  needs `BEAVER_ALLOW_CUSTOM_HOST=1` in the job.
+- `beaver auth logout` revokes the refresh and access tokens on the platform before removing them here,
+  and tells you if revocation failed.
 - Tokens are never accepted as command line arguments, because arguments are visible to other users
   in the process table.
 - This binary enforces nothing. Ownership, scopes, spend limits and the approval gate are all decided

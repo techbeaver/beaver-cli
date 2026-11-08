@@ -58,7 +58,7 @@ func addResources(server *mcpsdk.Server, deps *Deps, identity *Identity) {
 	}
 
 	for _, entry := range catalogue {
-		if !identity.HasAll(entry.scopes) {
+		if !identity.HasAll(entry.scopes) || !deps.Surface.offersScopes(entry.scopes) {
 			continue
 		}
 		path := entry.path

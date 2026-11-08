@@ -1,6 +1,8 @@
 package command
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -12,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/techbeaver/beaver-cli/client"
 	"github.com/techbeaver/beaver-cli/internal/exitcode"
 )
 
@@ -69,6 +72,13 @@ type strictAPI struct {
 	mu   sync.Mutex
 	keys []string
 	env  map[string]string
+	// revealed is set if any read asked for reveal; writes lists each env write sent.
+	revealed bool
+	// leak makes a plain read return real values, as a misbehaving server might.
+	leak   bool
+	writes []string
+	// confirmedBody is the body the registered confirmation was bound to.
+	confirmedBody []byte
 	// script answers the first calls to charge routes before the normal handler does.
 	script []func(w http.ResponseWriter) bool
 }
@@ -98,23 +108,84 @@ func newStrictAPI(t *testing.T) *strictAPI {
 		s.mu.Unlock()
 
 		switch {
+		case r.Method == http.MethodPost && path == "/mcp/confirmations":
+			s.confirmedBody, _ = json.Marshal(body["body"])
+			writeEnvelope(w, http.StatusCreated, map[string]any{"id": "conf-1", "status": "pending", "approvalUrl": "https://example/approve"})
+		case r.Method == http.MethodGet && strings.HasPrefix(path, "/mcp/confirmations/"):
+			writeEnvelope(w, http.StatusOK, map[string]any{"status": "approved", "confirmationToken": "ct-1"})
+		case r.Method == http.MethodPut && strings.HasSuffix(path, "/env") && r.Header.Get(ConfirmationHeader) != "ct-1":
+			writeEnvelope(w, http.StatusPreconditionRequired, map[string]any{"code": "confirmation_required"})
+		case r.Method == http.MethodPut && strings.HasSuffix(path, "/env") && !bytes.Equal(compact(s.confirmedBody), compact(a.requests[len(a.requests)-1].raw)):
+			writeEnvelope(w, http.StatusForbidden, map[string]any{"code": "confirmation_body_mismatch"})
+		case r.Method == http.MethodPost && strings.HasSuffix(path, "/env/upsert"):
+			sent := body["envVars"].(map[string]any)
+			for k, v := range sent {
+				if v.(string) == EnvWithheldMarker {
+					writeEnvelope(w, http.StatusBadRequest, map[string]any{"code": "withheld_marker_for_unset_key"})
+					return
+				}
+				s.env[k] = v.(string)
+			}
+			s.writes = append(s.writes, "UPSERT "+string(a.requests[len(a.requests)-1].raw))
+			writeEnvelope(w, http.StatusOK, map[string]any{})
+		case r.Method == http.MethodDelete && strings.Contains(path, "/env/") && r.Header.Get(ConfirmationHeader) != "ct-1":
+			writeEnvelope(w, http.StatusPreconditionRequired, map[string]any{"code": "confirmation_required"})
+		case r.Method == http.MethodDelete && strings.Contains(path, "/env/"):
+			key := path[strings.LastIndex(path, "/")+1:]
+			if _, ok := s.env[key]; !ok {
+				writeEnvelope(w, http.StatusNotFound, map[string]any{"code": "env_key_not_found"})
+				return
+			}
+			delete(s.env, key)
+			s.writes = append(s.writes, "DELETE "+key+" body="+string(a.requests[len(a.requests)-1].raw))
+			writeEnvelope(w, http.StatusOK, map[string]any{})
 		case r.Method == http.MethodGet && strings.HasSuffix(path, "/env"):
+			s.revealed = r.URL.Query().Get("reveal") == "true"
 			rows := []map[string]any{}
 			for k, v := range s.env {
-				rows = append(rows, map[string]any{"key": k, "value": v})
+				if s.revealed || s.leak {
+					rows = append(rows, map[string]any{"key": k, "value": v})
+				} else {
+					rows = append(rows, map[string]any{"key": k, "value": EnvWithheldMarker})
+				}
 			}
 			writeEnvelope(w, http.StatusOK, rows)
 		case strings.HasSuffix(path, "/env"):
-			s.env = map[string]string{}
-			for k, v := range body["envVars"].(map[string]any) {
-				s.env[k] = v.(string)
+			sent := body["envVars"].(map[string]any)
+			next := map[string]string{}
+			if r.Method == http.MethodPatch {
+				for k, v := range s.env {
+					next[k] = v
+				}
 			}
+			for k, v := range sent {
+				if v.(string) == EnvWithheldMarker {
+					old, ok := s.env[k]
+					if !ok {
+						writeEnvelope(w, http.StatusBadRequest, map[string]any{"code": "withheld_marker_for_unset_key"})
+						return
+					}
+					next[k] = old
+					continue
+				}
+				next[k] = v.(string)
+			}
+			s.env = next
+			s.writes = append(s.writes, r.Method+" "+string(a.requests[len(a.requests)-1].raw))
 			writeEnvelope(w, http.StatusOK, map[string]any{})
 		default:
 			writeEnvelope(w, http.StatusCreated, map[string]any{"id": "new-1", "status": "pending_payment"})
 		}
 	})
 	return s
+}
+
+func compact(raw []byte) []byte {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return raw
+	}
+	return buf.Bytes()
 }
 
 func failWith(status int, code string) func(http.ResponseWriter) bool {
@@ -283,7 +354,7 @@ func envKeys(m map[string]string) string {
 	return strings.Join(out, ",")
 }
 
-func TestSettingAVariableKeepsTheOthers(t *testing.T) {
+func TestSettingAVariableUpsertsOnlyTheNamedOnesWithNoReadAndNoApproval(t *testing.T) {
 	api := newStrictAPI(t)
 	env, _, _ := newTestEnv(t, api.URL)
 	if err := run(t, env, "apps", "env", "set", "--app", "app-1", "B=3", "C=4"); err != nil {
@@ -292,12 +363,23 @@ func TestSettingAVariableKeepsTheOthers(t *testing.T) {
 	if got := envKeys(api.env); got != "A=1,B=3,C=4" {
 		t.Errorf("env = %s", got)
 	}
+	if len(api.writes) != 1 || !strings.HasPrefix(api.writes[0], "UPSERT ") || strings.Contains(api.writes[0], `"A"`) {
+		t.Errorf("writes = %v", api.writes)
+	}
+	for _, r := range api.requests {
+		if r.method == http.MethodGet && strings.HasSuffix(r.path, "/env") {
+			t.Error("set read the variables first")
+		}
+		if strings.Contains(r.path, "confirmations") || r.method == http.MethodPatch || r.method == http.MethodPut {
+			t.Errorf("unexpected %s %s", r.method, r.path)
+		}
+	}
 }
 
 func TestReplaceIsTheOnlyWayToDropVariablesBySetting(t *testing.T) {
 	api := newStrictAPI(t)
 	env, _, _ := newTestEnv(t, api.URL)
-	if err := run(t, env, "apps", "env", "set", "--app", "app-1", "--replace", "C=4"); err != nil {
+	if err := run(t, env, "apps", "env", "set", "--app", "app-1", "--yes", "--wait", "1m", "--replace", "C=4"); err != nil {
 		t.Fatal(err)
 	}
 	if got := envKeys(api.env); got != "C=4" {
@@ -305,24 +387,127 @@ func TestReplaceIsTheOnlyWayToDropVariablesBySetting(t *testing.T) {
 	}
 }
 
-func TestUnsetRemovesOnlyTheNamedVariables(t *testing.T) {
+func TestUnsetDeletesEachExistingKeyOnItsOwnThroughTheApprovalFlow(t *testing.T) {
 	api := newStrictAPI(t)
 	env, _, errOut := newTestEnv(t, api.URL)
-	if err := run(t, env, "apps", "env", "unset", "--app", "app-1", "A", "NOPE"); err != nil {
+	if err := run(t, env, "apps", "env", "unset", "--app", "app-1", "--yes", "--wait", "1m", "A", "NOPE", "A"); err != nil {
 		t.Fatal(err)
 	}
 	if got := envKeys(api.env); got != "B=2" {
 		t.Errorf("env = %s", got)
 	}
+	if len(api.writes) != 1 || api.writes[0] != "DELETE A body=" {
+		t.Errorf("writes = %v", api.writes)
+	}
 	if !strings.Contains(errOut.String(), "NOPE was not set") {
 		t.Errorf("stderr = %q", errOut.String())
 	}
+	if api.calls(http.MethodPost, "/mcp/confirmations") != 1 {
+		t.Errorf("want one approval for the one key that exists")
+	}
+	for _, r := range api.requests {
+		if r.method == http.MethodPut || r.method == http.MethodPatch {
+			t.Errorf("a whole-set write was sent: %s", r.method)
+		}
+	}
 
-	if err := run(t, env, "apps", "env", "unset", "--app", "app-1", "B"); err != nil {
+	if err := run(t, env, "apps", "env", "unset", "--app", "app-1", "--yes", "--wait", "1m", "B"); err != nil {
 		t.Fatal(err)
 	}
 	if len(api.env) != 0 {
 		t.Errorf("removing the last variable left %v", api.env)
+	}
+}
+
+func TestUnsetOfOnlyMissingKeysAsksForNoApprovalAndSendsNothing(t *testing.T) {
+	api := newStrictAPI(t)
+	env, _, errOut := newTestEnv(t, api.URL)
+	before := len(api.requests)
+	if err := run(t, env, "apps", "env", "unset", "--app", "app-1", "X", "Y"); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range api.requests[before:] {
+		if r.method != http.MethodGet {
+			t.Errorf("sent %s %s", r.method, r.path)
+		}
+	}
+	if !strings.Contains(errOut.String(), "X was not set") || !strings.Contains(errOut.String(), "Nothing to remove") {
+		t.Errorf("stderr = %q", errOut.String())
+	}
+}
+
+func TestUnsetNeverWritesTheWholeSetSoAKeyAddedMeanwhileSurvives(t *testing.T) {
+	api := newStrictAPI(t)
+	env, _, _ := newTestEnv(t, api.URL)
+	if err := run(t, env, "apps", "env", "unset", "--app", "app-1", "--yes", "--wait", "1m", "A"); err != nil {
+		t.Fatal(err)
+	}
+	api.mu.Lock()
+	api.env["ADDED_MEANWHILE"] = "v"
+	api.mu.Unlock()
+	if err := run(t, env, "apps", "env", "unset", "--app", "app-1", "--yes", "--wait", "1m", "B"); err != nil {
+		t.Fatal(err)
+	}
+	if got := envKeys(api.env); got != "ADDED_MEANWHILE=v" {
+		t.Errorf("env = %s", got)
+	}
+}
+
+func TestAnOlderAPIWithoutTheEnvRoutesFailsClearlyAndNeverFallsBack(t *testing.T) {
+	for name, answer := range map[string]func(w http.ResponseWriter){
+		"plain 404": func(w http.ResponseWriter) { w.WriteHeader(404); _, _ = w.Write([]byte("Cannot POST")) },
+		"json 404 no code": func(w http.ResponseWriter) {
+			writeEnvelope(w, 404, map[string]any{})
+		},
+		"not allowlisted": func(w http.ResponseWriter) {
+			writeEnvelope(w, 403, map[string]any{"code": "route_not_permitted"})
+		},
+		"confirmation not applicable": func(w http.ResponseWriter) {
+			writeEnvelope(w, 400, map[string]any{"code": "confirmation_not_applicable"})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			api := newFakeAPI(t, func(a *fakeAPI, w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/env"):
+					writeEnvelope(w, 200, []map[string]any{{"key": "A", "value": "[withheld]"}})
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/mcp/confirmations") && name != "confirmation not applicable":
+					writeEnvelope(w, 201, map[string]any{"id": "c1", "status": "pending", "approvalUrl": "https://x/a"})
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/mcp/confirmations/"):
+					writeEnvelope(w, 200, map[string]any{"status": "approved", "confirmationToken": "ct"})
+				default:
+					answer(w)
+				}
+			})
+			env, _, _ := newTestEnv(t, api.URL)
+			for _, args := range [][]string{
+				{"apps", "env", "set", "--app", "app-1", "N=1"},
+				{"apps", "env", "unset", "--app", "app-1", "--yes", "--wait", "1m", "A"},
+			} {
+				err := run(t, env, args...)
+				if err == nil || !strings.Contains(err.Error(), "does not support") || !strings.Contains(err.Error(), "nothing was changed") {
+					t.Errorf("%v: %v", args, err)
+				}
+			}
+			for _, r := range api.requests {
+				if r.method == http.MethodPatch || r.method == http.MethodPut {
+					t.Errorf("fell back to %s", r.method)
+				}
+			}
+		})
+	}
+}
+
+func TestARealNotFoundIsNotMistakenForAMissingRoute(t *testing.T) {
+	for _, err := range []error{
+		&client.APIError{StatusCode: 404, Message: "Application not found"},
+		&client.APIError{StatusCode: 404, Code: "env_key_not_found", Message: "That variable is not set"},
+		&client.APIError{StatusCode: 500, Message: "boom"},
+		&client.APIError{StatusCode: 403, Code: "secrets_scope_required"},
+	} {
+		if envRouteMissing(err) {
+			t.Errorf("%v was treated as a missing route", err)
+		}
 	}
 }
 
@@ -331,16 +516,32 @@ func TestNothingIsWrittenWhenTheCurrentSetCannotBeRead(t *testing.T) {
 		writeEnvelope(w, http.StatusInternalServerError, map[string]any{})
 	})
 	env, _, _ := newTestEnv(t, api.URL)
-	for _, args := range [][]string{
-		{"apps", "env", "set", "--app", "app-1", "A=1"},
-		{"apps", "env", "unset", "--app", "app-1", "A"},
-	} {
-		if err := run(t, env, args...); err == nil || !strings.Contains(err.Error(), "nothing was changed") {
-			t.Errorf("%v: err = %v", args, err)
-		}
+	args := []string{"apps", "env", "unset", "--app", "app-1", "A"}
+	if err := run(t, env, args...); err == nil || !strings.Contains(err.Error(), "nothing was changed") {
+		t.Errorf("%v: err = %v", args, err)
 	}
 	if api.calls(http.MethodPut, "/paas/apps/app-1/env")+api.calls(http.MethodPatch, "/paas/apps/app-1/env") != 0 {
 		t.Error("wrote after a failed read")
+	}
+}
+
+func TestNoWritePathEverAsksToReveal(t *testing.T) {
+	api := newStrictAPI(t)
+	env, _, _ := newTestEnv(t, api.URL)
+	for _, args := range [][]string{
+		{"apps", "env", "set", "--app", "app-1", "N=1"},
+		{"apps", "env", "set", "--app", "app-1", "--replace", "--yes", "--wait", "1m", "N=1"},
+		{"apps", "env", "unset", "--app", "app-1", "--yes", "--wait", "1m", "N"},
+	} {
+		_ = api
+		if err := run(t, env, args...); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	for _, r := range api.requests {
+		if strings.Contains(r.query, "reveal") {
+			t.Fatalf("reveal sent: %s?%s", r.path, r.query)
+		}
 	}
 }
 

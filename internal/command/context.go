@@ -14,6 +14,7 @@ import (
 	"github.com/techbeaver/beaver-cli/internal/auth"
 	"github.com/techbeaver/beaver-cli/internal/config"
 	"github.com/techbeaver/beaver-cli/internal/credential"
+	"github.com/techbeaver/beaver-cli/internal/endpoint"
 	"github.com/techbeaver/beaver-cli/internal/exitcode"
 	"github.com/techbeaver/beaver-cli/internal/output"
 )
@@ -41,7 +42,8 @@ type Env struct {
 	Project string
 	App     string
 
-	flags flagValues
+	flags             flagValues
+	warnedProjectHost bool
 }
 
 // flagValues holds what the command line supplied this invocation.
@@ -63,7 +65,26 @@ func pick(flag, programmatic string) string {
 
 // Resolve applies the configuration precedence for this invocation.
 func (e *Env) Resolve() (*config.Resolved, error) {
-	return e.Loader.Resolve(config.Overrides{
+	r, err := e.Loader.Resolve(config.Overrides{
+		Profile: pick(e.flags.profile, e.Profile),
+		Host:    pick(e.flags.host, e.Host),
+		Project: pick(e.flags.project, e.Project),
+		App:     pick(e.flags.app, e.App),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if r.IgnoredProjectHost != "" && !e.warnedProjectHost {
+		e.warnedProjectHost = true
+		fmt.Fprintf(e.Err, "Warning: %s sets host = %q, which is ignored. A project file cannot choose where your credentials are sent. Use --host, BEAVER_HOST or beaver config set host.\n",
+			r.ProjectFile, r.IgnoredProjectHost)
+	}
+	return r, nil
+}
+
+// ResolveLenient is Resolve for config and logout, which must work when the host is bad.
+func (e *Env) ResolveLenient() (*config.Resolved, error) {
+	return e.Loader.ResolveLenient(config.Overrides{
 		Profile: pick(e.flags.profile, e.Profile),
 		Host:    pick(e.flags.host, e.Host),
 		Project: pick(e.flags.project, e.Project),
@@ -110,17 +131,16 @@ func (e *Env) Authenticate(ctx context.Context) (*Session, error) {
 		}
 	}
 
+	if err := endpoint.Require(tok.Host, resolved.Host, config.DefaultHost); err != nil {
+		return nil, fmt.Errorf("%w: %s", exitcode.ErrUnauthenticated, err)
+	}
+
 	if tok.Expired() {
 		switch {
 		case tok.RefreshToken != "":
-			refreshed, err := auth.Refresh(ctx, resolved.Host, tok.RefreshToken)
-			if err != nil {
-				return nil, fmt.Errorf("%w: your session could not be renewed, run beaver auth login", exitcode.ErrUnauthenticated)
-			}
-			if err := e.Store.Save(resolved.Profile, refreshed); err != nil {
+			if tok, err = e.refresh(ctx, resolved, tok); err != nil {
 				return nil, err
 			}
-			tok = refreshed
 		case auth.WorkloadName() != "":
 			// A workload token has no refresh token by design, so exchange again. ADR 0015.
 			if tok, err = e.workloadSignIn(ctx, resolved); err != nil {
@@ -139,6 +159,66 @@ func (e *Env) Authenticate(ctx context.Context) (*Session, error) {
 		Profile:  resolved.Profile,
 		Resolved: resolved,
 	}, nil
+}
+
+// withCredentialLock runs fn while holding the profile's credential lock, so a login or logout
+// cannot interleave with a refresh that is in flight.
+func (e *Env) withCredentialLock(ctx context.Context, profile string, fn func() error) error {
+	lockCtx, cancel := context.WithTimeout(ctx, refreshLockWait)
+	defer cancel()
+	release, err := credential.Lock(lockCtx, e.Loader.Dir, profile)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return fn()
+}
+
+// refreshLockWait bounds how long one process waits for another to finish
+// refreshing the same credential.
+const refreshLockWait = 30 * time.Second
+
+// refresh renews an expired credential while holding the profile's lock.
+//
+// Refresh tokens rotate, so two processes refreshing at once would spend the
+// same one twice and leave one of them signed out. The credential is read again
+// after the lock is taken, in case the other process already renewed it.
+func (e *Env) refresh(ctx context.Context, resolved *config.Resolved, stale *credential.Token) (*credential.Token, error) {
+	lockCtx, cancel := context.WithTimeout(ctx, refreshLockWait)
+	defer cancel()
+	release, err := credential.Lock(lockCtx, e.Loader.Dir, resolved.Profile)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	current := stale
+	if latest, err := e.Store.Load(resolved.Profile); err == nil {
+		if err := endpoint.Require(latest.Host, resolved.Host, config.DefaultHost); err != nil {
+			return nil, fmt.Errorf("%w: %s", exitcode.ErrUnauthenticated, err)
+		}
+		if !latest.Expired() {
+			return latest, nil
+		}
+		if latest.RefreshToken != "" {
+			current = latest
+		}
+	}
+
+	refreshed, err := auth.Refresh(ctx, resolved.Host, current.RefreshToken)
+	if err != nil {
+		return nil, fmt.Errorf("%w: your session could not be renewed, run beaver auth login", exitcode.ErrUnauthenticated)
+	}
+	if refreshed.RefreshToken == "" {
+		refreshed.RefreshToken = current.RefreshToken
+	}
+	if len(refreshed.Scopes) == 0 {
+		refreshed.Scopes = current.Scopes
+	}
+	if err := e.Store.Save(resolved.Profile, refreshed); err != nil {
+		return nil, err
+	}
+	return refreshed, nil
 }
 
 // credentialExpiryWarning is how long before a credential lapses this client
@@ -192,7 +272,7 @@ func (e *Env) workloadSignIn(ctx context.Context, resolved *config.Resolved) (*c
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", exitcode.ErrUnauthenticated, err)
 	}
-	_ = e.Store.Save(resolved.Profile, tok)
+	_ = e.withCredentialLock(ctx, resolved.Profile, func() error { return e.Store.Save(resolved.Profile, tok) })
 	return tok, nil
 }
 

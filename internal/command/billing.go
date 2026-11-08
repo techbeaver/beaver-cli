@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/spf13/cobra"
 	"github.com/techbeaver/beaver-cli/client"
@@ -24,7 +25,9 @@ func newInvoicesCommand(env *Env) *cobra.Command {
 		}),
 		getCommand(env, getSpec{
 			use: "describe ID", short: "Show one invoice",
-			path: func(_ *Session, args []string) (string, error) { return "/billing/invoices/" + args[0], nil },
+			path: func(_ *Session, args []string) (string, error) {
+				return "/billing/invoices/" + url.PathEscape(args[0]), nil
+			},
 		}),
 		newInvoicePayCommand(env),
 	)
@@ -46,7 +49,7 @@ func newInvoicePayCommand(env *Env) *cobra.Command {
 				return err
 			}
 			envelope, err := s.Client.Do(cmd.Context(), s.Token, client.Request{
-				Method: http.MethodPost, Path: "/billing/invoices/" + args[0] + "/pay",
+				Method: http.MethodPost, Path: "/billing/invoices/" + url.PathEscape(args[0]) + "/pay",
 			})
 			if err != nil {
 				return err
@@ -55,8 +58,8 @@ func newInvoicePayCommand(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if url := str(obj["authorizationUrl"]); url != "" && env.IsTTY {
-				fmt.Fprintf(env.Err, "\nOpen this to pay:\n\n  %s\n\n", url)
+			if link := str(obj["authorizationUrl"]); link != "" && env.IsTTY {
+				fmt.Fprintf(env.Err, "\nOpen this to pay:\n\n  %s\n\n", link)
 			}
 			w, err := env.Writer()
 			if err != nil {

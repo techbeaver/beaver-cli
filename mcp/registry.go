@@ -8,6 +8,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/techbeaver/beaver-cli/client"
+	"github.com/techbeaver/beaver-cli/scopes"
 )
 
 // The tool surface, and the rules that hold across all of it.
@@ -44,6 +45,42 @@ type Deps struct {
 	Client *client.Client
 	Auth   *Authenticator
 	Config Config
+	// Surface narrows which tools are offered. The zero value offers every tool
+	// the caller's scopes allow, except the ones that reveal secrets.
+	Surface Surface
+}
+
+// Surface is chosen by whoever runs the server, never by the model.
+type Surface struct {
+	// ReadOnly offers only tools that change nothing.
+	ReadOnly bool
+	// Scopes, when non-empty, offers only tools whose required scopes are all in
+	// this list, whatever else the credential was granted.
+	Scopes []string
+	// AllowSecrets offers the tools that return secret values into the
+	// conversation. Off by default: a model cannot ask for them.
+	AllowSecrets bool
+}
+
+// offers reports whether a tool is part of this surface, before the caller's
+// own scopes are considered.
+// offersScopes applies the operator's --scope list to anything that needs scopes, such as a
+// resource. Resources only read, so --read-only never hides one.
+func (s Surface) offersScopes(required []string) bool {
+	return len(s.Scopes) == 0 || scopes.HasAll(s.Scopes, required)
+}
+
+func (s Surface) offers(spec toolSpec) bool {
+	if spec.Secret && !s.AllowSecrets {
+		return false
+	}
+	if s.ReadOnly && !spec.ReadOnly {
+		return false
+	}
+	if len(s.Scopes) > 0 && !scopes.HasAll(s.Scopes, spec.Scopes) {
+		return false
+	}
+	return true
 }
 
 // toolSpec is the declarative part of a tool: what it is called, what it needs,
@@ -61,6 +98,9 @@ type toolSpec struct {
 	// client; the enforcement is the human-approved confirmation the API
 	// demands, not this flag.
 	Destructive bool
+	// Secret means the tool returns secret values into the conversation. It is
+	// only offered when the operator of the server turned secrets on.
+	Secret bool
 	// Idempotent means calling it twice with the same arguments has the same
 	// effect as calling it once.
 	Idempotent bool
@@ -163,7 +203,7 @@ func (r *Registry) Build(deps *Deps, identity *Identity) *mcpsdk.Server {
 	})
 
 	for _, reg := range r.regs {
-		if !identity.HasAll(reg.spec.Scopes) {
+		if !identity.HasAll(reg.spec.Scopes) || !deps.Surface.offers(reg.spec) {
 			continue
 		}
 		reg.add(server, deps)

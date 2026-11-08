@@ -36,6 +36,9 @@ type fakeAPI struct {
 	checkouts int
 	// created counts apps actually created, i.e. invoices actually raised.
 	created int
+	// upsertStatus makes /env/upsert answer with that error, as an older API would.
+	upsertStatus int
+	upsertCode   string
 	// partner makes whoami answer as a partner key holding billing:spend.
 	partner bool
 
@@ -49,6 +52,7 @@ type recordedRequest struct {
 	Path    string
 	Headers http.Header
 	Body    string
+	Query   string
 }
 
 func (f *fakeAPI) record(r *http.Request) {
@@ -56,8 +60,14 @@ func (f *fakeAPI) record(r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, recordedRequest{
-		Method: r.Method, Path: r.URL.Path, Headers: r.Header.Clone(), Body: string(body),
+		Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Headers: r.Header.Clone(), Body: string(body),
 	})
+}
+
+func (f *fakeAPI) snapshot() []recordedRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]recordedRequest(nil), f.requests...)
 }
 
 func (f *fakeAPI) sawHeader(path, header string) string {
@@ -221,11 +231,22 @@ func (f *fakeAPI) handler() http.Handler {
 			ok(w, map[string]any{})
 
 		case path == "/paas/apps/app-1/env" && r.Method == http.MethodGet:
+			if r.URL.Query().Get("reveal") == "true" && !scopes.Has(f.scopes, scopes.SecretsRead) {
+				fail(w, http.StatusForbidden, "secrets_scope_required", "reveal needs secrets:read")
+				return
+			}
 			// The API answers a list of {key, value}, not an object.
 			ok(w, []map[string]any{
 				{"key": "DATABASE_URL", "value": "postgres://user:hunter2@db.example.test/app"},
 				{"key": "LOG_LEVEL", "value": "info"},
 			})
+
+		case path == "/paas/apps/app-1/env/upsert" && r.Method == http.MethodPost:
+			if f.upsertStatus != 0 {
+				fail(w, f.upsertStatus, f.upsertCode, "x")
+				return
+			}
+			ok(w, map[string]any{})
 
 		case path == "/paas/apps/app-1/env":
 			var body map[string]any
@@ -472,9 +493,15 @@ func TestEnvironmentVariablesAreRedactedByDefault(t *testing.T) {
 		t.Fatalf("the variable names should still be visible: %s", text)
 	}
 
+	// The old model-controlled flag is gone: passing it changes nothing.
 	res = callTool(t, session, "get_env_vars", map[string]any{"appId": "app-1", "includeValues": true})
-	if !strings.Contains(resultText(res), "hunter2") {
-		t.Fatal("asking explicitly for values should return them")
+	if strings.Contains(resultText(res), "hunter2") {
+		t.Fatal("a model-supplied includeValues revealed a secret")
+	}
+	for _, req := range api.snapshot() {
+		if strings.Contains(req.Query, "reveal") {
+			t.Fatalf("a read-only tool asked the API to reveal secrets: %s?%s", req.Path, req.Query)
+		}
 	}
 }
 

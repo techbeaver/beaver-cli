@@ -22,7 +22,7 @@ func newDBCommand(env *Env) *cobra.Command {
 				if err != nil {
 					return "", err
 				}
-				return "/dbaas/projects/" + project + "/instances", nil
+				return "/dbaas/projects/" + url.PathEscape(project) + "/instances", nil
 			},
 		}),
 		getCommand(env, getSpec{use: "describe ID", short: "Show one database", path: instancePath("")}),
@@ -43,7 +43,7 @@ func newDBCommand(env *Env) *cobra.Command {
 
 func instancePath(suffix string) func(*Session, []string) (string, error) {
 	return func(_ *Session, args []string) (string, error) {
-		return "/dbaas/instances/" + args[0] + suffix, nil
+		return "/dbaas/instances/" + url.PathEscape(args[0]) + suffix, nil
 	}
 }
 
@@ -76,7 +76,7 @@ func newDBCreateCommand(env *Env) *cobra.Command {
 			putIfSet(body, "databaseName", dbName)
 			putIfSet(body, "username", username)
 			envelope, err := sendCharge(cmd.Context(), env, s, client.Request{
-				Method: http.MethodPost, Path: "/dbaas/projects/" + project + "/instances", Body: body,
+				Method: http.MethodPost, Path: "/dbaas/projects/" + url.PathEscape(project) + "/instances", Body: body,
 			}, key)
 			if err != nil {
 				return err
@@ -111,7 +111,7 @@ func newDBLogsCommand(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			req := client.Request{Path: "/dbaas/instances/" + args[0] + "/logs/provision"}
+			req := client.Request{Path: "/dbaas/instances/" + url.PathEscape(args[0]) + "/logs/provision"}
 			if follow {
 				return s.Client.Stream(cmd.Context(), s.Token, req, func(line string) {
 					_, _ = env.Out.Write([]byte(line + "\n"))
@@ -143,14 +143,48 @@ func newDBRolesCommand(env *Env) *cobra.Command {
 			path: instancePath("/roles"),
 			body: func(args []string) any { return map[string]any{"name": args[1]} },
 		}),
-		actionCommand(env, actionSpec{
-			use: "reset-password ID ROLE_ID", short: "Set a new password on a role",
-			args: cobra.ExactArgs(2),
-			path: func(_ *Session, args []string) (string, error) {
-				return "/dbaas/instances/" + args[0] + "/roles/" + args[1] + "/password", nil
-			},
-		}),
+		newDBResetPasswordCommand(env),
 	)
+	return cmd
+}
+
+// newDBResetPasswordCommand rotates a role's password. The platform requires a browser approval
+// for it, because it locks out whatever still uses the old one.
+func newDBResetPasswordCommand(env *Env) *cobra.Command {
+	var (
+		assumeYes bool
+		wait      time.Duration
+	)
+	cmd := &cobra.Command{
+		Use:   "reset-password ID ROLE_ID",
+		Short: "Set a new password on a role",
+		Long: "Rotating a password needs your approval in a browser, because every client using the old one\n" +
+			"stops connecting. --yes skips this CLI's prompt, not that approval. The new password is\n" +
+			"masked in the reply unless this credential was granted secrets:read.",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := env.Authenticate(cmd.Context())
+			if err != nil {
+				return err
+			}
+			path, err := instancePath("/roles/"+url.PathEscape(args[1])+"/password")(s, args)
+			if err != nil {
+				return err
+			}
+			envelope, err := RunDestructive(cmd.Context(), env, s, DestructiveRequest{
+				Method: http.MethodPost, Path: path,
+				Action: "reset the password of", ResourceType: "database role", ResourceID: args[1], ResourceName: args[1],
+				Preview:      map[string]any{"database": args[0]},
+				RecoveryNote: "Anything connecting with the old password stops working until it is given the new one.",
+			}, assumeYes, wait)
+			if err != nil {
+				return err
+			}
+			return renderObject(env, envelope)
+		},
+	}
+	cmd.Flags().BoolVar(&assumeYes, "yes", false, "skip this CLI's prompt (the browser approval still applies)")
+	cmd.Flags().DurationVar(&wait, "wait", 0, "how long to wait for approval before exiting 6")
 	return cmd
 }
 
@@ -192,7 +226,7 @@ func newDBExtensionsCommand(env *Env) *cobra.Command {
 
 func extensionsPath(suffix string) func(*Session, []string) (string, error) {
 	return func(_ *Session, args []string) (string, error) {
-		return "/dbaas/instances/" + args[0] + "/databases/" + args[1] + "/extensions" + suffix, nil
+		return "/dbaas/instances/" + url.PathEscape(args[0]) + "/databases/" + url.PathEscape(args[1]) + "/extensions" + suffix, nil
 	}
 }
 
@@ -227,7 +261,7 @@ func newDBExtensionDisableCommand(env *Env) *cobra.Command {
 			}
 			envelope, err := s.Client.Do(cmd.Context(), s.Token, client.Request{
 				Method: http.MethodDelete,
-				Path: "/dbaas/instances/" + args[0] + "/databases/" + args[1] +
+				Path: "/dbaas/instances/" + url.PathEscape(args[0]) + "/databases/" + url.PathEscape(args[1]) +
 					"/extensions/" + url.PathEscape(args[2]),
 			})
 			if err != nil {
@@ -282,7 +316,7 @@ func newDBRestoreCommand(env *Env) *cobra.Command {
 				body["backupId"] = backupID
 			}
 			envelope, err := RunDestructive(cmd.Context(), env, s, DestructiveRequest{
-				Method: http.MethodPost, Path: "/dbaas/instances/" + args[0] + "/restore", Body: body,
+				Method: http.MethodPost, Path: "/dbaas/instances/" + url.PathEscape(args[0]) + "/restore", Body: body,
 				Action: "restore over", ResourceType: "database", ResourceID: args[0], ResourceName: args[0],
 				Preview:      map[string]any{"backup": backupID},
 				RecoveryNote: "Restoring writes over the data that is there now.",
@@ -300,14 +334,33 @@ func newDBRestoreCommand(env *Env) *cobra.Command {
 }
 
 func newDBConnectionCommand(env *Env) *cobra.Command {
-	return getCommand(env, getSpec{
-		use:   "connection-string ID DATABASE_ID",
-		short: "Show how to connect to a database",
-		args:  cobra.ExactArgs(2),
-		path: func(_ *Session, args []string) (string, error) {
-			return "/dbaas/instances/" + args[0] + "/databases/" + args[1] + "/connection-info", nil
+	var reveal bool
+	cmd := &cobra.Command{
+		Use:   "connection-string ID DATABASE_ID",
+		Short: "Show how to connect to a database (the password is masked)",
+		Long:  "The password is masked unless you pass --reveal, which needs a credential granted secrets:read.",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := env.Authenticate(cmd.Context())
+			if err != nil {
+				return err
+			}
+			req := client.Request{
+				Method: http.MethodGet,
+				Path:   "/dbaas/instances/" + url.PathEscape(args[0]) + "/databases/" + url.PathEscape(args[1]) + "/connection-info",
+			}
+			if reveal {
+				req.Query = url.Values{"reveal": {"true"}}
+			}
+			envelope, err := s.Client.Do(cmd.Context(), s.Token, req)
+			if err != nil {
+				return explainSecretsScope(err)
+			}
+			return renderObject(env, envelope)
 		},
-	})
+	}
+	cmd.Flags().BoolVar(&reveal, "reveal", false, "include the password, which is a secret (needs the secrets:read scope)")
+	return cmd
 }
 
 func newDBAllowlistCommand(env *Env) *cobra.Command {
@@ -342,7 +395,7 @@ func newDBDeleteCommand(env *Env) *cobra.Command {
 				return err
 			}
 			envelope, err := RunDestructive(cmd.Context(), env, s, DestructiveRequest{
-				Method: http.MethodDelete, Path: "/dbaas/instances/" + args[0],
+				Method: http.MethodDelete, Path: "/dbaas/instances/" + url.PathEscape(args[0]),
 				Action: "delete", ResourceType: "database", ResourceID: args[0], ResourceName: args[0],
 				RecoveryNote: "Deleting a managed database removes it and its data.",
 			}, assumeYes, wait)

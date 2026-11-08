@@ -1,7 +1,6 @@
 package command
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"net/http"
@@ -11,7 +10,9 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/techbeaver/beaver-cli/client"
 	"github.com/techbeaver/beaver-cli/internal/auth"
+	"github.com/techbeaver/beaver-cli/internal/config"
 	"github.com/techbeaver/beaver-cli/internal/credential"
+	"github.com/techbeaver/beaver-cli/internal/endpoint"
 	"github.com/techbeaver/beaver-cli/internal/exitcode"
 	"github.com/techbeaver/beaver-cli/scopes"
 )
@@ -88,7 +89,9 @@ func newAuthLoginCommand(env *Env) *cobra.Command {
 				return err
 			}
 
-			if err := env.Store.Save(resolved.Profile, tok); err != nil {
+			if err := env.withCredentialLock(cmd.Context(), resolved.Profile, func() error {
+				return env.Store.Save(resolved.Profile, tok)
+			}); err != nil {
 				return err
 			}
 			fmt.Fprintf(env.Err, "Signed in. Credential stored in %s.\n", env.Store.Describe())
@@ -110,19 +113,12 @@ func newAuthLoginCommand(env *Env) *cobra.Command {
 // carries the token's expiry, which is the only way this client can ever warn
 // before a pasted credential lapses: the string itself says nothing.
 func readPastedToken(ctx context.Context, env *Env, host string) (*credential.Token, error) {
-	fmt.Fprint(env.Err, "Paste your personal token (it will not be echoed by your shell): ")
-	reader := bufio.NewReader(env.In)
-	line, err := reader.ReadString('\n')
-	if err != nil && line == "" {
-		return nil, fmt.Errorf("no token was supplied")
+	token, err := readSecret(ctx, env, "Paste your personal token (not echoed): ", false)
+	if err != nil {
+		return nil, err
 	}
-	token := strings.TrimSpace(line)
-	if token == "" {
-		return nil, usageErr("no token was supplied")
-	}
-	fmt.Fprintln(env.Err)
 
-	tok := &credential.Token{AccessToken: token, Host: strings.TrimRight(host, "/")}
+	tok := &credential.Token{AccessToken: token, Host: host}
 	if expiry, scopeList, err := describeCredential(ctx, host, token); err == nil {
 		tok.ExpiresAt = expiry
 		tok.Scopes = scopeList
@@ -161,23 +157,82 @@ func describeCredential(ctx context.Context, host, token string) (time.Time, []s
 	return expiry, scopeList, nil
 }
 
+// revokeTimeout bounds the revocation calls so signing out never hangs on a
+// network that is down.
+const revokeTimeout = 10 * time.Second
+
 func newAuthLogoutCommand(env *Env) *cobra.Command {
 	return &cobra.Command{
 		Use:   "logout",
-		Short: "Remove the stored credential",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			resolved, err := env.Resolve()
+		Short: "Revoke and remove the stored credential",
+		Long: "Asks the platform to revoke the refresh token and the access token, then removes them from this\n" +
+			"machine. The local copy is removed even if the platform cannot be reached, and you are told if\n" +
+			"revocation failed so you can revoke the token in the portal.\n\n" +
+			"For a credential from beaver auth login --token, revocation ends that token everywhere it is\n" +
+			"used, not only on this machine.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resolved, err := env.ResolveLenient()
 			if err != nil {
 				return err
 			}
-			if err := env.Store.Delete(resolved.Profile); err != nil {
+			var (
+				tok      *credential.Token
+				failures []string
+			)
+			err = env.withCredentialLock(cmd.Context(), resolved.Profile, func() error {
+				var loadErr error
+				tok, loadErr = env.Store.Load(resolved.Profile)
+				if loadErr != nil && loadErr != credential.ErrNotFound {
+					failures = append(failures, fmt.Sprintf("the stored credential could not be read (%v)", loadErr))
+					tok = nil
+				}
+				return env.Store.Delete(resolved.Profile)
+			})
+			if err != nil {
 				return err
 			}
+			if tok != nil {
+				failures = append(failures, revokeStored(cmd.Context(), tok)...)
+			}
 			fmt.Fprintf(env.Err, "Signed out of profile %q.\n", resolved.Profile)
+			if len(failures) > 0 {
+				fmt.Fprintf(env.Err, "Warning: the token may still be valid on the platform until it expires. %s. Revoke it under Portal, AI and CLI.\n",
+					strings.Join(failures, "; "))
+			}
 			return nil
 		},
 	}
+}
+
+// revokeStored revokes both halves of a credential at the host that issued it, which is the host
+// recorded on it and not whatever the profile points at now. A credential with no recorded host
+// is taken to be the default host's. Each half is attempted whatever happened to the other.
+func revokeStored(ctx context.Context, tok *credential.Token) []string {
+	host := tok.Host
+	if strings.TrimSpace(host) == "" {
+		host = config.DefaultHost
+	}
+	issuer, err := endpoint.Normalise(host)
+	if err != nil {
+		return []string{"it was not sent for revocation: its recorded host is unusable (" + err.Error() + ")"}
+	}
+	var failures []string
+	for _, item := range []struct{ value, hint string }{
+		{tok.RefreshToken, auth.HintRefreshToken},
+		{tok.AccessToken, auth.HintAccessToken},
+	} {
+		if item.value == "" {
+			continue
+		}
+		callCtx, cancel := context.WithTimeout(ctx, revokeTimeout)
+		err := auth.Revoke(callCtx, issuer, item.value, item.hint)
+		cancel()
+		if err != nil {
+			failures = append(failures, err.Error())
+		}
+	}
+	return failures
 }
 
 func newAuthWhoamiCommand(env *Env) *cobra.Command {

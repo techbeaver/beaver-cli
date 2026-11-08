@@ -11,6 +11,12 @@ set -eu
 REPO="techbeaver/beaver-cli"
 BIN="beaver"
 
+# What a genuine release is signed as. The certificate identity is the exact
+# release workflow on the exact tag being installed, so a signature from any
+# other workflow, or from another tag, is refused. The issuer is GitHub Actions.
+SIGNER_WORKFLOW='https://github.com/techbeaver/beaver-cli/.github/workflows/release.yml@refs/tags/'
+SIGNER_ISSUER='https://token.actions.githubusercontent.com'
+
 info()  { printf '%s\n' "$*" >&2; }
 fatal() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
@@ -48,6 +54,61 @@ choose_dir() {
   printf '%s' "$HOME/.local/bin"
 }
 
+# sha256_of prints the SHA-256 of a file, or fails if this machine has no tool
+# that can compute one. Failing is deliberate: an installer that cannot verify
+# does not install.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+# expected_sum prints the one checksum listed for a file, and fails unless the
+# file is listed exactly once with a well-formed SHA-256.
+expected_sum() {
+  matches=$(awk -v f="$2" '$2 == f || $2 == "*" f { print $1 }' "$1")
+  count=$(printf '%s\n' "$matches" | grep -c . || true)
+  [ "$count" -eq 1 ] || return 1
+  case "$matches" in
+    *[!0-9a-f]*) return 1 ;;
+  esac
+  [ "${#matches}" -eq 64 ] || return 1
+  printf '%s' "$matches"
+}
+
+# verify_signature checks that checksums.txt was produced by this repository's
+# release workflow. Without cosign it says so loudly and carries on only if the
+# caller has not demanded a signature: BEAVER_REQUIRE_SIGNATURE=1 makes a
+# missing cosign fatal, which is what an automated install should set.
+verify_signature() {
+  if ! command -v cosign >/dev/null 2>&1; then
+    if [ "${BEAVER_REQUIRE_SIGNATURE:-}" = "1" ]; then
+      fatal "BEAVER_REQUIRE_SIGNATURE=1 is set but cosign is not installed, so the release signature cannot be verified. Install cosign (https://docs.sigstore.dev/) and run this again."
+    fi
+    info ""
+    info "WARNING: cosign is not installed, so the release signature was NOT verified."
+    info "The checksum below proves the download is intact. It does not prove who built it."
+    info "Install cosign to check the signature, or set BEAVER_REQUIRE_SIGNATURE=1 to refuse to continue without it."
+    info ""
+    return 0
+  fi
+
+  curl -fsSL "$base/checksums.txt.sig" -o "$tmp/checksums.txt.sig" || fatal "could not download checksums.txt.sig. Not installing."
+  curl -fsSL "$base/checksums.txt.pem" -o "$tmp/checksums.txt.pem" || fatal "could not download checksums.txt.pem. Not installing."
+  cosign verify-blob \
+    --certificate "$tmp/checksums.txt.pem" \
+    --signature "$tmp/checksums.txt.sig" \
+    --certificate-identity "${SIGNER_WORKFLOW}${version}" \
+    --certificate-oidc-issuer "$SIGNER_ISSUER" \
+    "$tmp/checksums.txt" >/dev/null \
+    || fatal "the signature on checksums.txt did not verify against this repository's release workflow. Not installing."
+  info "Signature verified."
+}
+
 main() {
   need curl
   need tar
@@ -60,6 +121,10 @@ main() {
       | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
     [ -n "$version" ] || fatal "could not determine the latest version. Set BEAVER_VERSION to install a specific one."
   fi
+  case "$version" in v*) ;; *) version="v$version" ;; esac
+  # The version goes into a URL and a file name, so it is checked rather than trusted.
+  printf '%s' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' \
+    || fatal "that is not a release version: $version"
   number=${version#v}
 
   archive="${BIN}_${number}_${platform}.tar.gz"
@@ -70,25 +135,20 @@ main() {
 
   info "Downloading $BIN $version for $platform..."
   curl -fsSL "$base/$archive" -o "$tmp/$archive" || fatal "could not download $archive"
+  curl -fsSL "$base/checksums.txt" -o "$tmp/checksums.txt" || fatal "could not download checksums.txt, so the download cannot be verified. Not installing."
+
+  verify_signature
 
   # Verify before unpacking. A corrupted or substituted archive should fail
-  # here rather than after it is on PATH.
-  if curl -fsSL "$base/checksums.txt" -o "$tmp/checksums.txt" 2>/dev/null; then
-    expected=$(grep " $archive\$" "$tmp/checksums.txt" | awk '{print $1}')
-    if [ -n "$expected" ]; then
-      if command -v sha256sum >/dev/null 2>&1; then
-        actual=$(sha256sum "$tmp/$archive" | awk '{print $1}')
-      elif command -v shasum >/dev/null 2>&1; then
-        actual=$(shasum -a 256 "$tmp/$archive" | awk '{print $1}')
-      fi
-      if [ -n "${actual:-}" ] && [ "$actual" != "$expected" ]; then
-        fatal "checksum mismatch. Expected $expected, got $actual. Not installing."
-      fi
-      [ -n "${actual:-}" ] && info "Checksum verified."
-    fi
-  else
-    info "Warning: could not fetch checksums.txt; continuing without verification."
-  fi
+  # here rather than after it is on PATH, and a missing checksum is a failure,
+  # never a reason to carry on.
+  expected=$(expected_sum "$tmp/checksums.txt" "$archive") \
+    || fatal "checksums.txt does not list $archive exactly once with a valid SHA-256. Not installing."
+  actual=$(sha256_of "$tmp/$archive") \
+    || fatal "this machine has neither sha256sum nor shasum, so the download cannot be verified. Not installing."
+  [ -n "$actual" ] || fatal "could not compute the checksum of $archive. Not installing."
+  [ "$actual" = "$expected" ] || fatal "checksum mismatch. Expected $expected, got $actual. Not installing."
+  info "Checksum verified."
 
   tar -xzf "$tmp/$archive" -C "$tmp" || fatal "could not unpack $archive"
   [ -f "$tmp/$BIN" ] || fatal "the archive did not contain $BIN"

@@ -2,6 +2,7 @@ package command
 
 import (
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -20,7 +21,9 @@ func newProjectsCommand(env *Env) *cobra.Command {
 		getCommand(env, getSpec{
 			use:   "describe ID",
 			short: "Show one project",
-			path:  func(_ *Session, args []string) (string, error) { return "/paas/projects/" + args[0], nil },
+			path: func(_ *Session, args []string) (string, error) {
+				return "/paas/projects/" + url.PathEscape(args[0]), nil
+			},
 		}),
 		newProjectCreateCommand(env),
 		newProjectDeleteCommand(env),
@@ -73,7 +76,7 @@ func newProjectDeleteCommand(env *Env) *cobra.Command {
 			}
 			envelope, err := RunDestructive(cmd.Context(), env, s, DestructiveRequest{
 				Method:       http.MethodDelete,
-				Path:         "/paas/projects/" + args[0],
+				Path:         "/paas/projects/" + url.PathEscape(args[0]),
 				Action:       "delete",
 				ResourceType: "project",
 				ResourceID:   args[0],

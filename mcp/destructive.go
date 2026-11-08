@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -114,19 +115,28 @@ type pendingConfirmation struct {
 
 // createConfirmation registers the pending act with the API.
 func createConfirmation(ctx context.Context, deps *Deps, call *Call, spec destructiveSpec) (*pendingConfirmation, error) {
+	reg := map[string]any{
+		"method":       spec.Method,
+		"path":         spec.Path,
+		"action":       spec.Action,
+		"resourceType": spec.ResourceType,
+		"resourceId":   spec.ResourceID,
+		"resourceName": spec.ResourceName,
+		"summary":      spec.Preview,
+		"recoveryNote": spec.RecoveryNote,
+	}
+	// The API hashes the body it will authorise, so the confirmation declares it here.
+	if spec.Body != nil {
+		encoded, err := json.Marshal(spec.Body)
+		if err != nil {
+			return nil, fmt.Errorf("encoding the request body: %w", err)
+		}
+		reg["body"] = json.RawMessage(encoded)
+	}
 	env, err := deps.Client.Do(ctx, call.Session.Token, client.Request{
 		Method: http.MethodPost,
 		Path:   "/mcp/confirmations",
-		Body: map[string]any{
-			"method":       spec.Method,
-			"path":         spec.Path,
-			"action":       spec.Action,
-			"resourceType": spec.ResourceType,
-			"resourceId":   spec.ResourceID,
-			"resourceName": spec.ResourceName,
-			"summary":      spec.Preview,
-			"recoveryNote": spec.RecoveryNote,
-		},
+		Body:   reg,
 	})
 	if err != nil {
 		return nil, describeAPIError(err)

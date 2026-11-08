@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/techbeaver/beaver-cli/internal/endpoint"
 )
 
 // DefaultHost is the platform this CLI talks to.
@@ -31,12 +33,20 @@ type File struct {
 	Profiles map[string]Profile `toml:"profiles"`
 }
 
-// Project is the contents of beaver.toml.
+// Project is the contents of beaver.toml. Host is read only so it can be
+// reported as ignored: a cloned repository must not choose where credentials go.
 type Project struct {
 	Project string `toml:"project"`
 	App     string `toml:"app"`
 	Host    string `toml:"host,omitempty"`
 }
+
+// idPattern is what a project or app identifier from beaver.toml may look
+// like: a UUID or a slug. It has no slash, dot, question mark or hash.
+var idPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+
+// ValidID reports whether s is a safe project or app identifier.
+func ValidID(s string) bool { return idPattern.MatchString(s) }
 
 // Resolved is the effective configuration for one invocation.
 type Resolved struct {
@@ -44,6 +54,13 @@ type Resolved struct {
 	Host    string
 	Project string
 	App     string
+	// IgnoredProjectHost is a host found in beaver.toml and not used.
+	IgnoredProjectHost string
+	// ProjectFile is the beaver.toml that was read, if any.
+	ProjectFile string
+	// HostErr is set only by ResolveLenient, when the configured host is unusable. Host then
+	// holds the raw value for display and must never be contacted.
+	HostErr error
 }
 
 // Loader reads configuration. Dir is where the profile file lives; WorkDir is
@@ -126,18 +143,43 @@ type Overrides struct {
 }
 
 // Resolve applies the precedence: a flag, then the environment, then
-// beaver.toml, then the profile, then the default.
+// beaver.toml, then the profile, then the default. The host is the exception:
+// it never comes from beaver.toml, only from a flag, the environment, the
+// profile or the default.
 func (l *Loader) Resolve(o Overrides) (*Resolved, error) {
+	r, err := l.resolve(o)
+	if err != nil {
+		return nil, err
+	}
+	if r.HostErr != nil {
+		return nil, fmt.Errorf("%w. Fix it with: beaver config set host https://... or pass --host", r.HostErr)
+	}
+	return r, nil
+}
+
+// ResolveLenient is Resolve for the commands that repair a bad host (config, logout). A host
+// that fails validation is reported in HostErr instead of failing, and callers must not send
+// anything to it.
+func (l *Loader) ResolveLenient(o Overrides) (*Resolved, error) {
+	return l.resolve(o)
+}
+
+func (l *Loader) resolve(o Overrides) (*Resolved, error) {
 	f, err := l.Load()
 	if err != nil {
 		return nil, err
 	}
-	project, _, err := l.FindProjectFile()
+	project, projectPath, err := l.FindProjectFile()
 	if err != nil {
 		return nil, err
 	}
 	if project == nil {
 		project = &Project{}
+	}
+	for field, v := range map[string]string{"project": project.Project, "app": project.App} {
+		if v != "" && !ValidID(v) {
+			return nil, fmt.Errorf("%s: %s %q is not a valid identifier (letters, digits, - and _ only)", projectPath, field, v)
+		}
 	}
 
 	name := firstNonEmpty(o.Profile, os.Getenv("BEAVER_PROFILE"), f.Current, "default")
@@ -148,11 +190,19 @@ func (l *Loader) Resolve(o Overrides) (*Resolved, error) {
 		}
 	}
 
+	rawHost := firstNonEmpty(o.Host, os.Getenv("BEAVER_HOST"), profile.Host, DefaultHost)
+	host, hostErr := endpoint.Normalise(rawHost)
+	if hostErr != nil {
+		host = rawHost
+	}
 	return &Resolved{
-		Profile: name,
-		Host:    firstNonEmpty(o.Host, os.Getenv("BEAVER_HOST"), project.Host, profile.Host, DefaultHost),
-		Project: firstNonEmpty(o.Project, os.Getenv("BEAVER_PROJECT"), project.Project, profile.Project),
-		App:     firstNonEmpty(o.App, os.Getenv("BEAVER_APP"), project.App, profile.App),
+		Profile:            name,
+		Host:               host,
+		Project:            firstNonEmpty(o.Project, os.Getenv("BEAVER_PROJECT"), project.Project, profile.Project),
+		App:                firstNonEmpty(o.App, os.Getenv("BEAVER_APP"), project.App, profile.App),
+		IgnoredProjectHost: strings.TrimSpace(project.Host),
+		ProjectFile:        projectPath,
+		HostErr:            hostErr,
 	}, nil
 }
 

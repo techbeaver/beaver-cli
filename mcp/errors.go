@@ -44,6 +44,9 @@ func describeAPIError(err error) error {
 	case "insufficient_scope":
 		return fmt.Errorf("%s The account owner has to reconnect this client and grant that permission; you cannot grant it to yourself", apiErr.Message)
 
+	case "secrets_scope_required":
+		return fmt.Errorf("this connection was not granted secrets:read, so secret values are masked and cannot be read or written back. The account owner has to reconnect it with that permission; you cannot grant it to yourself")
+
 	case "route_not_permitted":
 		return fmt.Errorf("that operation is not available to AI agents at all. It can only be done by a person signed in to the TechBeaver console. Tell the customer that rather than looking for another way")
 
