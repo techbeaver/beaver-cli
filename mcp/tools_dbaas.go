@@ -24,6 +24,17 @@ type instanceIDInput struct {
 	InstanceID string `json:"instanceId" jsonschema:"the managed database's id, from list_databases"`
 }
 
+// connectionInfoInput has no flag for the password: revealing it is the
+// operator's decision (reveal_connection_info, offered only with --allow-secrets).
+type connectionInfoInput struct {
+	InstanceID string `json:"instanceId" jsonschema:"the managed database's id"`
+	DatabaseID string `json:"databaseId" jsonschema:"the logical database's id, from list_logical_databases"`
+}
+
+func connectionInfoPath(in connectionInfoInput) string {
+	return "/dbaas/instances/" + url.PathEscape(in.InstanceID) + "/databases/" + url.PathEscape(in.DatabaseID) + "/connection-info"
+}
+
 func registerDatabaseTools(r *Registry) {
 	register(r, toolSpec{
 		Name:     "list_databases",
@@ -105,24 +116,29 @@ func registerDatabaseTools(r *Registry) {
 		Title:    "Get connection details",
 		Scopes:   []string{scopes.DBaaSRead},
 		ReadOnly: true, Idempotent: true,
-		Description: "How to connect to a logical database: host, port, database name and user. The password is withheld unless you explicitly ask for it. Ask only when the customer asked for the password itself, and tell them it will appear in this conversation.",
-	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
-		InstanceID     string `json:"instanceId" jsonschema:"the managed database's id"`
-		DatabaseID     string `json:"databaseId" jsonschema:"the logical database's id, from list_logical_databases"`
-		IncludeSecrets bool   `json:"includeSecrets,omitempty" jsonschema:"set true ONLY if the customer asked for the password; it will appear in this conversation"`
-	}) (*ObjectResult, error) {
-		item, err := apiGet(ctx, deps, call,
-			"/dbaas/instances/"+url.PathEscape(in.InstanceID)+"/databases/"+url.PathEscape(in.DatabaseID)+"/connection-info", nil)
+		Description: "How to connect to a logical database: host, port, database name and user. The password is always withheld here.",
+	}, func(ctx context.Context, deps *Deps, call *Call, in connectionInfoInput) (*ObjectResult, error) {
+		item, err := apiGet(ctx, deps, call, connectionInfoPath(in), nil)
 		if err != nil {
 			return nil, err
 		}
-		if !in.IncludeSecrets {
-			// A connection string embeds the password, so it goes too.
-			item = omit(item, "password", "connectionString", "uri", "dsn", "url")
-			return &ObjectResult{
-				Summary: "Connection details, without the password. Ask again with includeSecrets if the customer wants it.",
-				Item:    item,
-			}, nil
+		// A connection string embeds the password, so it goes too.
+		return &ObjectResult{
+			Summary: "Connection details, without the password.",
+			Item:    omit(item, "password", "connectionString", "uri", "dsn", "url"),
+		}, nil
+	})
+
+	register(r, toolSpec{
+		Name:     "reveal_connection_info",
+		Title:    "Reveal connection details with the password",
+		Scopes:   []string{scopes.DBaaSRead, scopes.SecretsRead},
+		ReadOnly: true, Idempotent: true, Secret: true,
+		Description: "Connection details including the password and connection string. Use only when the customer asked for the password itself, and tell them it is now in this conversation.",
+	}, func(ctx context.Context, deps *Deps, call *Call, in connectionInfoInput) (*ObjectResult, error) {
+		item, err := apiGet(ctx, deps, call, connectionInfoPath(in), url.Values{"reveal": {"true"}})
+		if err != nil {
+			return nil, err
 		}
 		return &ObjectResult{
 			Summary: "Connection details including the password. Tell the customer this is now in the conversation and should be rotated if that is a problem.",

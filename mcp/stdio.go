@@ -17,6 +17,14 @@ type StdioOptions struct {
 	Token string
 	// UserAgent identifies the caller in the platform's request log.
 	UserAgent string
+	// ReadOnly offers only tools that change nothing.
+	ReadOnly bool
+	// Scopes, when non-empty, offers only tools whose required scopes are all
+	// in this list.
+	Scopes []string
+	// AllowSecrets offers the tools that put secret values into the
+	// conversation. Off unless the person running the server turns it on.
+	AllowSecrets bool
 }
 
 // ServeStdio runs the tool surface over stdio, for an AI client that launches
@@ -38,6 +46,11 @@ func ServeStdio(ctx context.Context, opts StdioOptions) error {
 		Client: apiClient,
 		Auth:   NewAuthenticator(apiClient),
 		Config: Config{APIBaseURL: opts.APIBaseURL},
+		Surface: Surface{
+			ReadOnly:     opts.ReadOnly,
+			Scopes:       opts.Scopes,
+			AllowSecrets: opts.AllowSecrets,
+		},
 	}
 
 	identity, err := deps.Auth.Resolve(ctx, opts.Token)

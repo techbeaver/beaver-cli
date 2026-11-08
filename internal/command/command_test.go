@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -35,6 +36,8 @@ func TestMain(m *testing.M) {
 	} {
 		_ = os.Unsetenv(key)
 	}
+	approvalPoll = 2 * time.Millisecond
+	_ = os.Setenv("BEAVER_ALLOW_CUSTOM_HOST", "1")
 	os.Exit(m.Run())
 }
 
@@ -48,6 +51,8 @@ type fakeAPI struct {
 type recorded struct {
 	method, path, confirmation string
 	body                       map[string]any
+	raw                        []byte
+	query                      string
 }
 
 func newFakeAPI(t *testing.T, handler func(*fakeAPI, http.ResponseWriter, *http.Request)) *fakeAPI {
@@ -59,8 +64,10 @@ func newFakeAPI(t *testing.T, handler func(*fakeAPI, http.ResponseWriter, *http.
 			path:         strings.TrimPrefix(r.URL.Path, "/api/v1"),
 			confirmation: r.Header.Get(ConfirmationHeader),
 		}
+		rec.query = r.URL.RawQuery
 		if r.Body != nil {
-			_ = json.NewDecoder(r.Body).Decode(&rec.body)
+			rec.raw, _ = io.ReadAll(r.Body)
+			_ = json.Unmarshal(rec.raw, &rec.body)
 		}
 		api.requests = append(api.requests, rec)
 		api.handler(api, w, r)
@@ -94,7 +101,7 @@ func newTestEnv(t *testing.T, host string) (*Env, *bytes.Buffer, *bytes.Buffer) 
 	t.Helper()
 	dir := t.TempDir()
 	store := &credential.FileStore{Dir: dir}
-	if err := store.Save("default", &credential.Token{AccessToken: "btk_test"}); err != nil {
+	if err := store.Save("default", &credential.Token{AccessToken: "btk_test", Host: host}); err != nil {
 		t.Fatal(err)
 	}
 	var out, errBuf bytes.Buffer
@@ -226,6 +233,7 @@ func TestAnExpiredCredentialWithNoRefreshTokenAsksForALogin(t *testing.T) {
 	})
 	env, _, _ := newTestEnv(t, api.URL)
 	if err := env.Store.Save("default", &credential.Token{
+		Host:        env.Host,
 		AccessToken: "old", ExpiresAt: time.Now().Add(-time.Hour),
 	}); err != nil {
 		t.Fatal(err)
@@ -326,6 +334,7 @@ func TestAnExpiringCredentialWarnsBeforeItStopsWorking(t *testing.T) {
 	})
 	env, _, errBuf := newTestEnv(t, api.URL)
 	if err := env.Store.Save("default", &credential.Token{
+		Host:        env.Host,
 		AccessToken: "btk_test",
 		ExpiresAt:   time.Now().Add(3 * 24 * time.Hour),
 	}); err != nil {
@@ -346,6 +355,7 @@ func TestACredentialWithPlentyOfTimeSaysNothing(t *testing.T) {
 	})
 	env, _, errBuf := newTestEnv(t, api.URL)
 	if err := env.Store.Save("default", &credential.Token{
+		Host:        env.Host,
 		AccessToken: "btk_test",
 		ExpiresAt:   time.Now().Add(60 * 24 * time.Hour),
 	}); err != nil {
@@ -367,6 +377,7 @@ func TestARenewableCredentialIsNeverWarnedAbout(t *testing.T) {
 	})
 	env, _, errBuf := newTestEnv(t, api.URL)
 	if err := env.Store.Save("default", &credential.Token{
+		Host:         env.Host,
 		AccessToken:  "btk_test",
 		RefreshToken: "brt_test",
 		ExpiresAt:    time.Now().Add(30 * time.Minute),
@@ -484,6 +495,7 @@ func TestOnARunnerAnExpiredCredentialIsExchangedAgainRatherThanFailing(t *testin
 	env, _, _ := newTestEnv(t, api.URL)
 	// A workload token has no refresh token, so a long job must re-exchange.
 	if err := env.Store.Save("default", &credential.Token{
+		Host:        env.Host,
 		AccessToken: "btk_stale",
 		ExpiresAt:   time.Now().Add(-time.Minute),
 	}); err != nil {

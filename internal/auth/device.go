@@ -80,15 +80,18 @@ func requestDeviceCode(ctx context.Context, opts DeviceOptions) (*deviceAuthResp
 	if len(opts.Scopes) > 0 {
 		form.Set("scope", strings.Join(opts.Scopes, " "))
 	}
-	endpoint := strings.TrimRight(opts.Host, "/") + "/api/v1/oauth/device_authorization"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	target, err := apiURL(opts.Host, "/api/v1/oauth/device_authorization")
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	resp, err := authClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("reaching the authorization server: %w", err)
 	}
@@ -115,15 +118,18 @@ func pollDeviceToken(ctx context.Context, host, deviceCode string) (*credential.
 		"device_code": {deviceCode},
 		"client_id":   {ClientID},
 	}
-	endpoint := strings.TrimRight(host, "/") + "/api/v1/oauth/token"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	target, err := apiURL(host, "/api/v1/oauth/token")
+	if err != nil {
+		return nil, 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, 0, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	resp, err := authClient().Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("reaching the authorization server: %w", err)
 	}
@@ -160,7 +166,7 @@ func pollDeviceToken(ctx context.Context, host, deviceCode string) (*credential.
 		AccessToken:  body.AccessToken,
 		RefreshToken: body.RefreshToken,
 		TokenType:    body.TokenType,
-		Host:         strings.TrimRight(host, "/"),
+		Host:         originOf(host),
 	}
 	if body.ExpiresIn > 0 {
 		tok.ExpiresAt = time.Now().Add(time.Duration(body.ExpiresIn) * time.Second)

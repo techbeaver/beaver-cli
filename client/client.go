@@ -19,6 +19,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/techbeaver/beaver-cli/internal/endpoint"
 )
 
 const (
@@ -41,8 +43,29 @@ func New(baseURL, userAgent string) *Client {
 	return &Client{
 		BaseURL:   strings.TrimRight(baseURL, "/"),
 		UserAgent: userAgent,
-		HTTP:      &http.Client{Timeout: 60 * time.Second},
+		HTTP:      &http.Client{Timeout: 60 * time.Second, CheckRedirect: endpoint.CheckRedirect},
 	}
+}
+
+// ErrBadPath means a request path could not be sent safely.
+var ErrBadPath = errors.New("refusing a request path with a query, fragment, backslash, empty or dot segment")
+
+// checkPath refuses a path that could address something other than what the
+// caller built it for: callers must escape each segment with [url.PathEscape].
+func checkPath(path string) error {
+	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#\\") {
+		return ErrBadPath
+	}
+	for _, seg := range strings.Split(path[1:], "/") {
+		if seg == "" {
+			return ErrBadPath
+		}
+		low := strings.ToLower(seg)
+		if low == "." || low == ".." || low == "%2e" || low == "%2e%2e" || low == ".%2e" || low == "%2e." {
+			return ErrBadPath
+		}
+	}
+	return nil
 }
 
 // Request is one API call.
@@ -72,6 +95,9 @@ func (c *Client) userAgent() string {
 
 // Do performs a call as the customer whose token this is.
 func (c *Client) Do(ctx context.Context, token string, req Request) (*Envelope, error) {
+	if err := checkPath(req.Path); err != nil {
+		return nil, fmt.Errorf("%w: %q", err, req.Path)
+	}
 	var body io.Reader
 	if req.Body != nil {
 		encoded, err := json.Marshal(req.Body)
@@ -201,6 +227,9 @@ func (c *Client) Stream(ctx context.Context, token string, req Request, onLine f
 }
 
 func (c *Client) openStream(ctx context.Context, token string, req Request, timeout time.Duration) (*http.Response, error) {
+	if err := checkPath(req.Path); err != nil {
+		return nil, fmt.Errorf("%w: %q", err, req.Path)
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint(req), nil)
 	if err != nil {
 		return nil, err
@@ -212,7 +241,7 @@ func (c *Client) openStream(ctx context.Context, token string, req Request, time
 		httpReq.Header.Set(HeaderCFConnectingIP, ip)
 	}
 
-	streamer := &http.Client{Timeout: timeout}
+	streamer := &http.Client{Timeout: timeout, CheckRedirect: endpoint.CheckRedirect}
 	resp, err := streamer.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("reading the log stream: %w", err)

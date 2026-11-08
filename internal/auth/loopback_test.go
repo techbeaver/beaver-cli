@@ -35,7 +35,10 @@ func TestPKCEIsS256AndUnique(t *testing.T) {
 }
 
 func TestAuthorizeURLAlwaysDeclaresS256(t *testing.T) {
-	raw := authorizeURL("https://api.example", "http://127.0.0.1:5000/callback", "st", "ch", []string{"paas:read"})
+	raw, err := authorizeURL("https://api.example", "http://127.0.0.1:5000/callback", "st", "ch", []string{"paas:read"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		t.Fatal(err)

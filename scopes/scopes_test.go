@@ -86,3 +86,31 @@ func TestMissingNamesWhatToAskFor(t *testing.T) {
 		t.Fatal("an empty requirement is satisfied by any grant")
 	}
 }
+
+func TestSecretsReadIsKnownIssuableAndNeverDefaulted(t *testing.T) {
+	if !IsKnown(SecretsRead) || !Issuable(SecretsRead) {
+		t.Fatal("secrets:read must be a scope a token can be granted")
+	}
+	if Has(Default, SecretsRead) {
+		t.Fatal("secrets:read must be asked for by name, never granted by default")
+	}
+	if !Has(All, SecretsRead) {
+		t.Fatal("secrets:read is missing from All, so a consent screen would never list it")
+	}
+	known, unknown := Parse("paas:read secrets:read")
+	if len(unknown) != 0 || !Has(known, SecretsRead) {
+		t.Fatalf("Parse did not accept secrets:read: %v %v", known, unknown)
+	}
+}
+
+// A new scope that reveals data must not slip into the default grant unnoticed.
+func TestNoDefaultScopeIsOutsideTheKnownVocabulary(t *testing.T) {
+	for _, s := range Default {
+		if !IsKnown(s) {
+			t.Errorf("default scope %q is not in the vocabulary", s)
+		}
+		if s == SecretsRead || s == BillingSpend || IsDestructive(s) {
+			t.Errorf("default scope %q must be asked for by name", s)
+		}
+	}
+}

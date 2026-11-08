@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -61,16 +62,21 @@ type setEnvInput struct {
 	Vars  map[string]string `json:"vars" jsonschema:"the variables to set; existing ones not named here are left alone"`
 }
 
+// getEnvInput has no flag for values. Whether secrets are revealed is the
+// operator's decision (the reveal_env_vars tool, offered only with
+// --allow-secrets), never an argument the model can set.
 type getEnvInput struct {
 	AppID string `json:"appId" jsonschema:"the app's id"`
-	// IncludeValues exists so that reading a secret is an explicit act rather
-	// than a side effect of asking what is configured.
-	IncludeValues bool `json:"includeValues,omitempty" jsonschema:"set true ONLY if the customer asked for the actual values; the values are secrets and will appear in this conversation"`
 }
 
 // readEnvVars returns the app's variables; the endpoint answers a list of {key, value}.
-func readEnvVars(ctx context.Context, deps *Deps, call *Call, appID string) (map[string]string, error) {
-	items, err := apiList(ctx, deps, call, "/paas/apps/"+url.PathEscape(appID)+"/env", nil)
+// Without reveal the values are masked by the API and only the names can be relied on.
+func readEnvVars(ctx context.Context, deps *Deps, call *Call, appID string, reveal bool) (map[string]string, error) {
+	var query url.Values
+	if reveal {
+		query = url.Values{"reveal": {"true"}}
+	}
+	items, err := apiList(ctx, deps, call, "/paas/apps/"+url.PathEscape(appID)+"/env", query)
 	if err != nil {
 		return nil, err
 	}
@@ -312,12 +318,12 @@ func registerAppTools(r *Registry) {
 
 	register(r, toolSpec{
 		Name:     "get_env_vars",
-		Title:    "Read environment variables",
+		Title:    "Read environment variable names",
 		Scopes:   []string{scopes.PaaSRead},
 		ReadOnly: true, Idempotent: true,
-		Description: "Which environment variables an app has. Values are hidden unless you explicitly ask for them, because they are secrets and this conversation may be read by someone else. Ask for values only when the customer asked for a value.",
+		Description: "Which environment variables an app has. Values are always hidden here, because they are secrets and this conversation may be read by someone else.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in getEnvInput) (*ObjectResult, error) {
-		vars, err := readEnvVars(ctx, deps, call, in.AppID)
+		vars, err := readEnvVars(ctx, deps, call, in.AppID, false)
 		if err != nil {
 			return nil, err
 		}
@@ -325,12 +331,26 @@ func registerAppTools(r *Registry) {
 		for k, v := range vars {
 			item[k] = v
 		}
-		if !in.IncludeValues {
-			item = redactValues(item)
-			return &ObjectResult{
-				Summary: fmt.Sprintf("%d environment variable(s). Values are hidden; ask again with includeValues if the customer wants one.", len(item)),
-				Item:    item,
-			}, nil
+		return &ObjectResult{
+			Summary: fmt.Sprintf("%d environment variable(s). Values are hidden.", len(item)),
+			Item:    redactValues(item),
+		}, nil
+	})
+
+	register(r, toolSpec{
+		Name:     "reveal_env_vars",
+		Title:    "Reveal environment variable values",
+		Scopes:   []string{scopes.PaaSRead, scopes.SecretsRead},
+		ReadOnly: true, Idempotent: true, Secret: true,
+		Description: "An app's environment variables with their secret values. Use only when the customer asked for a value itself, and tell them it is now in this conversation.",
+	}, func(ctx context.Context, deps *Deps, call *Call, in getEnvInput) (*ObjectResult, error) {
+		vars, err := readEnvVars(ctx, deps, call, in.AppID, true)
+		if err != nil {
+			return nil, err
+		}
+		item := make(map[string]any, len(vars))
+		for k, v := range vars {
+			item[k] = v
 		}
 		return &ObjectResult{
 			Summary: fmt.Sprintf("%d environment variable(s), values included. Warn the customer that these are now in this conversation.", len(item)),
@@ -342,24 +362,21 @@ func registerAppTools(r *Registry) {
 		Name:        "set_env_vars",
 		Title:       "Set environment variables",
 		Scopes:      []string{scopes.PaaSWrite},
-		Description: "Sets or updates environment variables. Variables you do not name are left alone: this reads the app's current set and merges yours into it. The app has to be redeployed for the change to reach the running container.",
+		Description: "Sets or updates environment variables. Variables you do not name are left alone: the API merges yours into the current set, so nothing is read first. The app has to be redeployed for the change to reach the running container.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in setEnvInput) (*ActionResult, error) {
-		current, err := readEnvVars(ctx, deps, call, in.AppID)
+		env, err := deps.Client.Do(ctx, call.Session.Token, client.Request{
+			Method: http.MethodPost, Path: "/paas/apps/" + url.PathEscape(in.AppID) + "/env/upsert",
+			Body: map[string]any{"envVars": in.Vars},
+		})
 		if err != nil {
-			return nil, fmt.Errorf("could not read the app's current environment variables, so nothing was changed: %w."+
-				" Setting variables replaces the whole set, so this tool will not write without knowing what is already there", err)
-		}
-		for k, v := range in.Vars {
-			current[k] = v
-		}
-		env, err := apiSend(ctx, deps, call, http.MethodPatch, "/paas/apps/"+url.PathEscape(in.AppID)+"/env",
-			map[string]any{"envVars": current}, nil)
-		if err != nil {
-			return nil, err
+			if explained := explainUpsertUnsupported(err); explained != err {
+				return nil, explained
+			}
+			return nil, describeAPIError(err)
 		}
 		item, _ := client.DecodeObject(env)
 		return &ActionResult{
-			Summary:  fmt.Sprintf("Updated %d environment variable(s); the app now has %d.", len(in.Vars), len(current)),
+			Summary:  fmt.Sprintf("Updated %d environment variable(s); the others are untouched.", len(in.Vars)),
 			Result:   redactValues(item),
 			NextStep: "Call deploy_app for the running app to pick these up.",
 		}, nil
@@ -473,4 +490,20 @@ func putIfSet(body map[string]any, key, value string) {
 	if value != "" {
 		body[key] = value
 	}
+}
+
+// explainUpsertUnsupported says plainly that an older API lacks the merge route. There is no
+// fallback: PATCH and PUT on an old API replace the whole set.
+func explainUpsertUnsupported(err error) error {
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	msg := strings.ToLower(apiErr.Message)
+	missing := apiErr.Code == "route_not_permitted" || apiErr.Code == "upstream_not_json" || strings.Contains(msg, "allowlist") ||
+		(apiErr.StatusCode == http.StatusNotFound && apiErr.Code == "" && !strings.Contains(msg, "not found"))
+	if !missing {
+		return err
+	}
+	return fmt.Errorf("this TechBeaver server does not support setting named environment variables yet (POST /env/upsert), so nothing was changed. Tell the customer to update the platform; do not look for another way to write the variables")
 }

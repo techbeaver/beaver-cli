@@ -31,6 +31,10 @@ const (
 	BillingRead     = "billing:read"
 	BillingCheckout = "billing:checkout"
 
+	// SecretsRead lets a token reveal secret values. It is known but never in
+	// [Default]: a token must ask for it by name.
+	SecretsRead = "secrets:read"
+
 	// BillingSpend is defined and enforced but not issuable. See ADR 0013.
 	BillingSpend = "billing:spend"
 )
@@ -43,10 +47,11 @@ var All = []string{
 	DBaaSRead, DBaaSWrite, DBaaSDestroy,
 	LogsRead,
 	BillingRead, BillingCheckout, BillingSpend,
+	SecretsRead,
 }
 
 // Default is what a client gets when it asks for nothing in particular. It
-// excludes both destroy scopes and BillingSpend.
+// excludes both destroy scopes, BillingSpend and SecretsRead.
 var Default = []string{
 	ProjectsRead, ProjectsWrite,
 	PaaSRead, PaaSWrite, PaaSDeploy,
@@ -77,6 +82,7 @@ var descriptions = map[string]string{
 	LogsRead:        "Read your build and runtime logs",
 	BillingRead:     "See your invoices, credit balance and what a purchase would cost",
 	BillingCheckout: "Prepare a payment. It cannot complete one: only you can, on the payment page",
+	SecretsRead:     "Reveal secret values, such as environment variables and database passwords, instead of seeing them masked",
 	BillingSpend:    "Spend your account credit against an invoice without a payment page",
 }
 

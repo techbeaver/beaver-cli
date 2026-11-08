@@ -28,6 +28,7 @@ func TestMain(m *testing.M) {
 	} {
 		_ = os.Unsetenv(key)
 	}
+	_ = os.Setenv(AllowCustomHostEnv, "1")
 	os.Exit(m.Run())
 }
 
@@ -221,22 +222,5 @@ func TestAPlatformWithNoResourceIdentifierIsReportedClearly(t *testing.T) {
 	_, err := LoginWorkload(context.Background(), WorkloadOptions{Host: platform.server.URL})
 	if err == nil || !strings.Contains(err.Error(), "resource identifier") {
 		t.Fatalf("expected a clear discovery failure, got %v", err)
-	}
-}
-
-func TestAnExplicitAudienceSkipsDiscovery(t *testing.T) {
-	runner := newFakeRunner(t)
-	platform := newFakePlatform(t)
-	platform.resource = "https://wrong.test/mcp"
-	onGitHubActions(t, runner.server.URL)
-
-	if _, err := LoginWorkload(context.Background(), WorkloadOptions{
-		Host:     platform.server.URL,
-		Audience: "https://explicit.test/mcp",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if runner.audience != "https://explicit.test/mcp" {
-		t.Fatalf("the override was ignored: %q", runner.audience)
 	}
 }

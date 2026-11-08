@@ -16,11 +16,17 @@ import (
 // connectLocal runs the stdio server's code path over an in-memory transport.
 func connectLocal(t *testing.T, api *fakeAPI) *mcpsdk.ClientSession {
 	t.Helper()
+	return connectLocalWith(t, api, Surface{})
+}
+
+// connectLocalWith is connectLocal with the operator's choice of surface.
+func connectLocalWith(t *testing.T, api *fakeAPI, surface Surface) *mcpsdk.ClientSession {
+	t.Helper()
 	apiServer := httptest.NewServer(api.handler())
 	t.Cleanup(apiServer.Close)
 
 	apiClient := client.New(apiServer.URL, "test")
-	deps := &Deps{Client: apiClient, Auth: NewAuthenticator(apiClient), Config: Config{APIBaseURL: apiServer.URL}}
+	deps := &Deps{Client: apiClient, Auth: NewAuthenticator(apiClient), Config: Config{APIBaseURL: apiServer.URL}, Surface: surface}
 	identity, err := deps.Auth.Resolve(context.Background(), "btk_test-token")
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +59,7 @@ func TestTheLocalServerSendsTheSignedInCredentialWithEveryCall(t *testing.T) {
 	}
 }
 
-func TestSettingOneVariableKeepsTheOthers(t *testing.T) {
+func TestSettingOneVariableSendsOnlyTheNamedOnesAndNeverReads(t *testing.T) {
 	api := &fakeAPI{scopes: scopes.All}
 	session := connectLocal(t, api)
 
@@ -67,13 +73,18 @@ func TestSettingOneVariableKeepsTheOthers(t *testing.T) {
 	if err := json.Unmarshal([]byte(api.lastBody()), &body); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"DATABASE_URL": "postgres://user:hunter2@db.example.test/app", "LOG_LEVEL": "debug", "NEW": "1"}
+	want := map[string]string{"LOG_LEVEL": "debug", "NEW": "1"}
 	if len(body.EnvVars) != len(want) {
-		t.Fatalf("sent %v, want %v", body.EnvVars, want)
+		t.Fatalf("sent %v, want only the named variables %v", body.EnvVars, want)
 	}
 	for k, v := range want {
 		if body.EnvVars[k] != v {
 			t.Errorf("%s = %q, want %q", k, body.EnvVars[k], v)
+		}
+	}
+	for _, req := range api.snapshot() {
+		if strings.Contains(req.Query, "reveal") {
+			t.Fatalf("a write path asked for reveal: %s?%s", req.Path, req.Query)
 		}
 	}
 	if strings.Contains(resultText(res), "hunter2") {

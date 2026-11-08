@@ -93,7 +93,10 @@ func Login(ctx context.Context, opts LoginOptions) (*credential.Token, error) {
 		_ = server.Shutdown(shutdownCtx)
 	}()
 
-	authURL := authorizeURL(opts.Host, redirectURI, state, pkce.Challenge, opts.Scopes)
+	authURL, err := authorizeURL(opts.Host, redirectURI, state, pkce.Challenge, opts.Scopes)
+	if err != nil {
+		return nil, err
+	}
 	opts.Prompt(authURL)
 	if err := opts.OpenURL(authURL); err != nil {
 		opts.Prompt("Could not open a browser. Open the link above by hand.")
@@ -157,7 +160,7 @@ func writePage(w http.ResponseWriter, title, message string) {
 <h1 style="font-size:1.25rem">%s</h1><p style="color:#555">%s</p></body></html>`, title, title, message)
 }
 
-func authorizeURL(host, redirectURI, state, challenge string, scopes []string) string {
+func authorizeURL(host, redirectURI, state, challenge string, scopes []string) (string, error) {
 	q := url.Values{
 		"response_type":         {"code"},
 		"client_id":             {ClientID},
@@ -169,7 +172,7 @@ func authorizeURL(host, redirectURI, state, challenge string, scopes []string) s
 	if len(scopes) > 0 {
 		q.Set("scope", strings.Join(scopes, " "))
 	}
-	return strings.TrimRight(host, "/") + "/api/v1/oauth/authorize?" + q.Encode()
+	return apiURL(host, "/api/v1/oauth/authorize?"+q.Encode())
 }
 
 func exchange(ctx context.Context, host, code, redirectURI, verifier string) (*credential.Token, error) {
@@ -193,15 +196,18 @@ func Refresh(ctx context.Context, host, refreshToken string) (*credential.Token,
 }
 
 func postToken(ctx context.Context, host string, form url.Values) (*credential.Token, error) {
-	endpoint := strings.TrimRight(host, "/") + "/api/v1/oauth/token"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	target, err := apiURL(host, "/api/v1/oauth/token")
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	resp, err := authClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("reaching the authorization server: %w", err)
 	}
@@ -223,7 +229,7 @@ func postToken(ctx context.Context, host string, form url.Values) (*credential.T
 		AccessToken:  body.AccessToken,
 		RefreshToken: body.RefreshToken,
 		TokenType:    body.TokenType,
-		Host:         strings.TrimRight(host, "/"),
+		Host:         originOf(host),
 	}
 	if body.ExpiresIn > 0 {
 		tok.ExpiresAt = time.Now().Add(time.Duration(body.ExpiresIn) * time.Second)

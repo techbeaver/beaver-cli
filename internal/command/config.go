@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/techbeaver/beaver-cli/internal/config"
+	"github.com/techbeaver/beaver-cli/internal/endpoint"
 )
 
 func newConfigCommand(env *Env) *cobra.Command {
@@ -23,7 +24,7 @@ func newConfigSet(env *Env) *cobra.Command {
 		Args:  cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
 			key, value := args[0], args[1]
-			resolved, err := env.Resolve()
+			resolved, err := env.ResolveLenient()
 			if err != nil {
 				return err
 			}
@@ -34,7 +35,11 @@ func newConfigSet(env *Env) *cobra.Command {
 			profile := file.Profiles[resolved.Profile]
 			switch key {
 			case "host":
-				profile.Host = value
+				origin, err := endpoint.Normalise(value)
+				if err != nil {
+					return usageErr("%s", err)
+				}
+				profile.Host = origin
 			case "project":
 				profile.Project = value
 			case "app":
@@ -61,7 +66,7 @@ func newConfigGet(env *Env) *cobra.Command {
 		Short: "Show one effective setting",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			resolved, err := env.Resolve()
+			resolved, err := env.ResolveLenient()
 			if err != nil {
 				return err
 			}
@@ -90,7 +95,7 @@ func newConfigList(env *Env) *cobra.Command {
 		Short: "Show the effective settings and every profile",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			resolved, err := env.Resolve()
+			resolved, err := env.ResolveLenient()
 			if err != nil {
 				return err
 			}
@@ -113,14 +118,18 @@ func newConfigList(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return w.Object(map[string]any{
+			obj := map[string]any{
 				"profile":      resolved.Profile,
 				"host":         resolved.Host,
 				"project":      resolved.Project,
 				"app":          resolved.App,
 				"profiles":     names,
 				"project_file": projectPath,
-			})
+			}
+			if resolved.HostErr != nil {
+				obj["host_error"] = resolved.HostErr.Error()
+			}
+			return w.Object(obj)
 		},
 	}
 }
