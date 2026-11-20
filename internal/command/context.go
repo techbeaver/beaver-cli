@@ -153,8 +153,12 @@ func (e *Env) Authenticate(ctx context.Context) (*Session, error) {
 
 	e.warnIfExpiringSoon(tok)
 
+	api := client.New(resolved.Host, "beaver/"+Version)
+	if e.flags.debug {
+		api.Debug = e.Err
+	}
 	return &Session{
-		Client:   client.New(resolved.Host, "beaver/"+Version),
+		Client:   api,
 		Token:    tok.AccessToken,
 		Profile:  resolved.Profile,
 		Resolved: resolved,

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/techbeaver/beaver-cli/client"
@@ -124,14 +125,15 @@ type callbackResult struct {
 // callbackHandler answers exactly one authorization response. The page it
 // serves never contains the authorization code.
 func callbackHandler(wantState string, results chan<- callbackResult) http.Handler {
-	var done bool
+	var once sync.Once
 	mux := http.NewServeMux()
 	mux.HandleFunc(CallbackPath, func(w http.ResponseWriter, r *http.Request) {
-		if done {
+		first := false
+		once.Do(func() { first = true })
+		if !first {
 			http.Error(w, "This login has already completed.", http.StatusGone)
 			return
 		}
-		done = true
 
 		q := r.URL.Query()
 		switch {

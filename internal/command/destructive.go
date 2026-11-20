@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/techbeaver/beaver-cli/client"
+	"github.com/techbeaver/beaver-cli/internal/approval"
 	"github.com/techbeaver/beaver-cli/internal/exitcode"
 )
 
@@ -210,8 +211,8 @@ func waitForApproval(ctx context.Context, env *Env, s *Session, pending *pending
 // status this client does not know is a failure: acting on it would mean
 // guessing whether a human said yes.
 func interpretStatus(status, token string, pending *pendingConfirmation) (done bool, tok string, err error) {
-	switch status {
-	case "approved":
+	switch approval.Classify(status) {
+	case approval.Approved:
 		if token == "" {
 			token = pending.Token
 		}
@@ -219,13 +220,13 @@ func interpretStatus(status, token string, pending *pendingConfirmation) (done b
 			return false, "", fmt.Errorf("the approval came back without a confirmation token, so nothing was done. Run the command again")
 		}
 		return true, token, nil
-	case "pending":
+	case approval.Pending:
 		return false, "", nil
-	case "rejected", "declined":
+	case approval.Rejected:
 		return false, "", fmt.Errorf("the approval was rejected, so nothing was done")
-	case "consumed":
+	case approval.Consumed:
 		return false, "", fmt.Errorf("that approval was already used for an earlier call. Nothing was done this time; run the command again for a fresh approval")
-	case "expired":
+	case approval.Expired:
 		return false, "", fmt.Errorf("that approval request expired. Run the command again for a fresh one")
 	default:
 		return false, "", fmt.Errorf("the platform reported the approval as %q, which this version of beaver does not understand, so nothing was done. Update beaver", status)

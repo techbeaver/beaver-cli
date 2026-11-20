@@ -10,6 +10,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/techbeaver/beaver-cli/client"
+	"github.com/techbeaver/beaver-cli/internal/approval"
 )
 
 // How a destructive act gets a human's approval.
@@ -73,6 +74,12 @@ type destructiveSpec struct {
 // no token to shuttle around. If they take longer, the call returns the link
 // and the agent can come back to it, so nothing is lost by the wait ending.
 const elicitationWait = 90 * time.Second
+
+// approvalWait and approvalPoll are variables so tests can shorten them.
+var (
+	approvalWait = elicitationWait
+	approvalPoll = 2 * time.Second
+)
 
 // performDestructive runs the whole flow for one destructive act.
 func performDestructive(ctx context.Context, deps *Deps, call *Call, confirmationToken string, spec destructiveSpec) (*DestructiveResult, error) {
@@ -218,12 +225,12 @@ func waitForApproval(ctx context.Context, deps *Deps, call *Call, confirmationID
 	if confirmationID == "" {
 		return false
 	}
-	deadline := time.Now().Add(elicitationWait)
+	deadline := time.Now().Add(approvalWait)
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return false
-		case <-time.After(2 * time.Second):
+		case <-time.After(approvalPoll):
 		}
 		env, err := deps.Client.Do(ctx, call.Session.Token, client.Request{
 			Method: http.MethodGet,
@@ -236,11 +243,8 @@ func waitForApproval(ctx context.Context, deps *Deps, call *Call, confirmationID
 		if err != nil {
 			return false
 		}
-		switch state.Status {
-		case "approved":
-			return true
-		case "rejected":
-			return false
+		if outcome := approval.Classify(state.Status); outcome.Settled() {
+			return outcome == approval.Approved
 		}
 	}
 	return false

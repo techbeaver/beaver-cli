@@ -40,7 +40,12 @@ func newAppsCommand(env *Env) *cobra.Command {
 		newAppDeployCommand(env),
 		actionCommand(env, actionSpec{use: "start [ID]", short: "Start an application", args: cobra.MaximumNArgs(1), path: appPath("/start")}),
 		actionCommand(env, actionSpec{use: "stop [ID]", short: "Stop an application", args: cobra.MaximumNArgs(1), path: appPath("/stop")}),
-		actionCommand(env, actionSpec{use: "rollback [ID]", short: "Roll back to the previous deployment", args: cobra.MaximumNArgs(1), path: appPath("/rollback")}),
+		newAppRollbackCommand(env),
+		listCommand(env, listSpec{
+			use: "deployments [ID]", short: "List an application's deployments, newest first",
+			args: cobra.MaximumNArgs(1), path: appPath("/deployments"),
+			columns: []string{"revision", "status", "isActive", "failureStage", "commitHash", "createdAt"},
+		}),
 		newAppRestartCommand(env),
 		newAppLogsCommand(env),
 		newAppEnvCommand(env),
@@ -71,6 +76,35 @@ func appPath(suffix string) func(*Session, []string) (string, error) {
 		}
 		return "/paas/apps/" + url.PathEscape(id) + suffix, nil
 	}
+}
+
+// newAppRollbackCommand needs the revision because the API has no notion of
+// "the previous deployment": it puts back the one it is told to.
+func newAppRollbackCommand(env *Env) *cobra.Command {
+	var revision string
+	cmd := actionCommand(env, actionSpec{
+		use:   "rollback [ID]",
+		short: "Put an earlier deployment back",
+		args:  cobra.MaximumNArgs(1),
+		path:  appPath("/rollback"),
+		body: func([]string) any {
+			return map[string]string{"revisionName": strings.TrimSpace(revision)}
+		},
+		flags: func(c *cobra.Command) {
+			c.Flags().StringVar(&revision, "revision", "", "revision name to put back, from beaver apps deployments (required)")
+		},
+	})
+	cmd.Long = "Puts the named earlier revision back. Nothing is rebuilt.\n\n" +
+		"List the revisions with beaver apps deployments and pass the one you want, usually the\n" +
+		"last whose status was active, as --revision."
+	cmd.Example = "  beaver apps deployments my-api\n  beaver apps rollback my-api --revision REVISION_NAME"
+	cmd.PreRunE = func(*cobra.Command, []string) error {
+		if strings.TrimSpace(revision) == "" {
+			return usageErr("--revision is required: the API rolls back to a named revision, so list them with beaver apps deployments")
+		}
+		return nil
+	}
+	return cmd
 }
 
 func newAppDeployCommand(env *Env) *cobra.Command {

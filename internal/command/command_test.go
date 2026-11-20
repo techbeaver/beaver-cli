@@ -50,6 +50,7 @@ type fakeAPI struct {
 
 type recorded struct {
 	method, path, confirmation string
+	idempotencyKey             string
 	body                       map[string]any
 	raw                        []byte
 	query                      string
@@ -65,6 +66,7 @@ func newFakeAPI(t *testing.T, handler func(*fakeAPI, http.ResponseWriter, *http.
 			confirmation: r.Header.Get(ConfirmationHeader),
 		}
 		rec.query = r.URL.RawQuery
+		rec.idempotencyKey = r.Header.Get(IdempotencyHeader)
 		if r.Body != nil {
 			rec.raw, _ = io.ReadAll(r.Body)
 			_ = json.Unmarshal(rec.raw, &rec.body)
