@@ -233,7 +233,7 @@ func TestEveryCommandEscapesWhatItPutsInAPath(t *testing.T) {
 	env, _, _ := newTestEnv(t, api.URL)
 
 	commands := [][]string{
-		{"apps", "describe", nasty}, {"apps", "start", nasty}, {"apps", "stop", nasty}, {"apps", "rollback", nasty},
+		{"apps", "describe", nasty}, {"apps", "start", nasty}, {"apps", "stop", nasty}, {"apps", "rollback", nasty, "--revision", "r1"}, {"apps", "deployments", nasty},
 		{"apps", "instances", nasty}, {"apps", "env", "list", nasty}, {"apps", "scale", nasty, "--replicas", "1", "--quote"},
 		{"apps", "set-port", nasty, "--port", "80"}, {"apps", "restart", nasty}, {"apps", "deploy", nasty},
 		{"apps", "domains", "list", nasty}, {"apps", "domains", "verify", nasty, "--app", "app-1"}, {"apps", "list", "--project", nasty},

@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -182,5 +184,72 @@ func TestLoginBindsLoopbackOnlyAndSendsNoSecret(t *testing.T) {
 func TestOpenBrowserRefusesAMalformedURL(t *testing.T) {
 	if err := OpenBrowser("not a url; rm -rf /"); err == nil {
 		t.Fatal("a malformed target must be refused rather than handed to a command")
+	}
+}
+
+func TestSimultaneousCallbacksHonourExactlyOne(t *testing.T) {
+	const callers = 32
+	results := make(chan callbackResult, 1)
+	srv := httptest.NewServer(callbackHandler("st", results))
+	defer srv.Close()
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	codes := make([]int, callers)
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			resp, err := http.Get(srv.URL + CallbackPath + "?state=st&code=c" + strconv.Itoa(i))
+			if err != nil {
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			codes[i] = resp.StatusCode
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var ok, gone int
+	for _, c := range codes {
+		switch c {
+		case http.StatusOK:
+			ok++
+		case http.StatusGone:
+			gone++
+		default:
+			t.Errorf("unexpected status %d", c)
+		}
+	}
+	if ok != 1 || gone != callers-1 {
+		t.Fatalf("want 1 accepted and %d refused, got %d and %d", callers-1, ok, gone)
+	}
+	if len(results) != 1 {
+		t.Fatalf("exactly one result must be delivered, got %d", len(results))
+	}
+}
+
+func TestALateCallbackAfterAMismatchedStateIsRefused(t *testing.T) {
+	results := make(chan callbackResult, 1)
+	srv := httptest.NewServer(callbackHandler("st", results))
+	defer srv.Close()
+
+	bad, err := http.Get(srv.URL + CallbackPath + "?state=evil&code=x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = bad.Body.Close()
+	if res := <-results; !errors.Is(res.err, ErrStateMismatch) {
+		t.Fatalf("want a state mismatch, got %+v", res)
+	}
+	good, err := http.Get(srv.URL + CallbackPath + "?state=st&code=real")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = good.Body.Close() }()
+	if good.StatusCode != http.StatusGone {
+		t.Fatalf("the single answer was already spent, got %d", good.StatusCode)
 	}
 }
