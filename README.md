@@ -122,6 +122,12 @@ What the client can reach is decided by whoever starts the server, never by the 
   database passwords) into the conversation. They are off by default, and need a credential granted
   `secrets:read`.
 
+Servers and the dollar wallet are covered too, by `list_server_plans`, `quote_server_order`,
+`order_server` and `create_wallet_topup_link`. An agent can never pay. A naira server order returns a
+Paystack payment link, a dollar order returns a portal link where you confirm the wallet payment, and a
+wallet top-up is a Stripe hosted link. `order_server` creates a draft only: nothing is provisioned or
+charged until you pay.
+
 For a hosted connection instead, point your client at `https://mcp.techbeaver.io/mcp` and approve it
 in the browser.
 

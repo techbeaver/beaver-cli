@@ -122,10 +122,9 @@ func registerDatabaseTools(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		// A connection string embeds the password, so it goes too.
 		return &ObjectResult{
 			Summary: "Connection details, without the password.",
-			Item:    omit(item, "password", "connectionString", "uri", "dsn", "url"),
+			Item:    omitSecrets(item),
 		}, nil
 	})
 
@@ -178,7 +177,7 @@ func registerDatabaseTools(r *Registry) {
 			return nil, err
 		}
 		item, _ := client.DecodeObject(env)
-		return &ActionResult{Summary: fmt.Sprintf("Created database %q.", in.Name), Result: omit(item, "password")}, nil
+		return &ActionResult{Summary: fmt.Sprintf("Created database %q.", in.Name), Result: omitSecrets(item)}, nil
 	})
 
 	registerExtensionTools(r)
@@ -216,7 +215,7 @@ func registerDatabaseTools(r *Registry) {
 		item, _ := client.DecodeObject(env)
 		return &ActionResult{
 			Summary:  fmt.Sprintf("Created role %q.", in.Name),
-			Result:   omit(item, "password"),
+			Result:   omitSecrets(item),
 			NextStep: "The password is the one you were given. It cannot be read back later, so make sure the customer has stored it.",
 		}, nil
 	})

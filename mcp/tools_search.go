@@ -156,7 +156,7 @@ func registerSearchTools(r *Registry) {
 			return nil, err
 		}
 		// Secrets have their own tools that say so; a generic fetch must not route round them.
-		item = omit(item, "envVars", "password", "connectionString", "uri", "dsn")
+		item = omitSecrets(item, "envVars")
 		encoded, _ := json.Marshal(item)
 		return &fetchOutput{
 			ID:       in.ID,
