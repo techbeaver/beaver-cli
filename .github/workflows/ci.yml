@@ -25,6 +25,26 @@ jobs:
         with:
           go-version: '1.26'
           cache: true
+      # The file length ratchet (see CONTRIBUTING.md). A new file must be 500 lines or fewer (test
+      # files 1000). Files recorded in line-cap-baseline.json may shrink and never grow, and
+      # the baseline itself may not be edited upwards: it is compared with the commit before.
+      - name: Line cap
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          node --test scripts/line-cap-selftest.mjs
+          base="$PUSH_BEFORE"
+          if [ "$EVENT_NAME" = "pull_request" ]; then base="$PR_BASE"; fi
+          if [ -n "$base" ] && ! echo "$base" | grep -qE '^0+$' && git fetch --quiet --depth=1 origin "$base"; then
+            node scripts/line-cap.mjs --base "$base"
+          else
+            echo "::warning::No earlier commit to compare the baseline with, so only the tree was checked."
+            node scripts/line-cap.mjs
+          fi
+
       - run: go build ./...
       - run: go test -race -coverprofile=coverage.out ./...
       - run: go vet ./...
