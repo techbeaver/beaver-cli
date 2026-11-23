@@ -26,7 +26,8 @@ func (c *Client) logCall(method, path string, resp *http.Response, started time.
 	}
 	c.debugMu.Lock()
 	defer c.debugMu.Unlock()
-	elapsed := time.Since(started).Round(time.Millisecond)
+	// Whole milliseconds, so a sub-millisecond request reads "0ms", never "0s".
+	elapsed := fmt.Sprintf("%dms", time.Since(started).Milliseconds())
 	switch {
 	case resp != nil:
 		line := fmt.Sprintf("beaver debug: %s /api/v1%s -> %d in %s", method, path, resp.StatusCode, elapsed)

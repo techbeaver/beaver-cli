@@ -115,7 +115,7 @@ func isEmpty(v any) bool {
 	switch rv.Kind() {
 	case reflect.String, reflect.Map, reflect.Slice, reflect.Array:
 		return rv.Len() == 0
-	case reflect.Ptr, reflect.Interface:
+	case reflect.Pointer, reflect.Interface:
 		return rv.IsNil()
 	}
 	return rv.IsZero()
@@ -143,7 +143,7 @@ func isNil(v any) bool {
 	}
 	rv := reflect.ValueOf(v)
 	switch rv.Kind() {
-	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Interface, reflect.Func, reflect.Chan:
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Interface, reflect.Func, reflect.Chan:
 		return rv.IsNil()
 	}
 	return false

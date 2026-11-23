@@ -20,13 +20,13 @@ const (
 )
 
 type serverCatalogRegion struct {
-	Id   string `json:"id"`
+	ID   string `json:"id"`
 	City string `json:"city"`
 	Code string `json:"code"`
 }
 
 type serverCatalogPlan struct {
-	Id        string `json:"id"`
+	ID        string `json:"id"`
 	Name      string `json:"name"`
 	VCPU      int    `json:"vcpu"`
 	RAMMB     int    `json:"ramMb"`
@@ -34,7 +34,7 @@ type serverCatalogPlan struct {
 }
 
 type serverCatalogOS struct {
-	Id      string `json:"id"`
+	ID      string `json:"id"`
 	PlanID  string `json:"planId"`
 	Name    string `json:"name"`
 	Version string `json:"version"`
@@ -83,17 +83,17 @@ type serverChoice struct {
 	OS     serverCatalogOS
 }
 
-func resolveServerChoice(cat *serverCatalog, planId, regionCode, osId string) (*serverChoice, error) {
+func resolveServerChoice(cat *serverCatalog, planID, regionCode, osID string) (*serverChoice, error) {
 	var choice serverChoice
 	found := false
 	for _, p := range cat.Plans {
-		if p.Id == planId {
+		if p.ID == planID {
 			choice.Plan, found = p, true
 			break
 		}
 	}
 	if !found {
-		return nil, fmt.Errorf("there is no plan with id %q in the catalog for this account. Call list_server_plans and use an id from it", planId)
+		return nil, fmt.Errorf("there is no plan with id %q in the catalog for this account. Call list_server_plans and use an id from it", planID)
 	}
 	if regionCode != "" {
 		found = false
@@ -109,13 +109,13 @@ func resolveServerChoice(cat *serverCatalog, planId, regionCode, osId string) (*
 	}
 	found = false
 	for _, o := range cat.OSes {
-		if o.Id == osId && (o.PlanID == "" || o.PlanID == choice.Plan.Id) {
+		if o.ID == osID && (o.PlanID == "" || o.PlanID == choice.Plan.ID) {
 			choice.OS, found = o, true
 			break
 		}
 	}
 	if !found {
-		return nil, fmt.Errorf("operating system %q is not offered with that plan. Call list_server_plans and use an osId whose planId matches the plan", osId)
+		return nil, fmt.Errorf("operating system %q is not offered with that plan. Call list_server_plans and use an osID whose planID matches the plan", osID)
 	}
 	return &choice, nil
 }
@@ -133,7 +133,7 @@ func checkBillingCycle(cycle string) (string, error) {
 
 func serverQuoteBody(c *serverChoice, cycle, currency string) map[string]any {
 	return map[string]any{
-		"planId": c.Plan.Id, "osId": c.OS.Id, "osName": c.OS.Name, "vcpu": c.Plan.VCPU,
+		"planId": c.Plan.ID, "osId": c.OS.ID, "osName": c.OS.Name, "vcpu": c.Plan.VCPU,
 		"billingCycle": cycle, "currency": currency,
 	}
 }
@@ -211,7 +211,7 @@ func registerServerTools(r *Registry) {
 		Name:        "order_server",
 		Title:       "Order a server",
 		Scopes:      []string{scopes.BillingRead, scopes.BillingCheckout},
-		Description: "Creates a DRAFT server order and prepares how the customer pays for it. Nothing is provisioned and nothing is charged until the customer pays, and you can never pay for them. For an account billed in naira the result has paymentUrl, a hosted payment page: hand it over. For an account billed in dollars the server is paid from the customer's wallet, which only they can charge, so the result has portalCheckoutUrl instead: hand that over and say they confirm the payment there. For a dollar order it also says whether the wallet covers it; if it does not, call create_wallet_topup_link with suggestedTopUpMinor and give the customer both links. Take planId, osId and regionCode from list_server_plans, and say the price from quote_server_order, never from memory. Repeating a call with the same idempotencyKey returns the first order rather than a second one.",
+		Description: "Creates a DRAFT server order and prepares how the customer pays for it. Nothing is provisioned and nothing is charged until the customer pays, and you can never pay for them. For an account billed in naira the result has paymentUrl, a hosted payment page: hand it over. For an account billed in dollars the server is paid from the customer's wallet, which only they can charge, so the result has portalCheckoutUrl instead: hand that over and say they confirm the payment there. For a dollar order it also says whether the wallet covers it; if it does not, call create_wallet_topup_link with suggestedTopUpMinor and give the customer both links. Take planID, osID and regionCode from list_server_plans, and say the price from quote_server_order, never from memory. Repeating a call with the same idempotencyKey returns the first order rather than a second one.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
 		Name           string `json:"name" jsonschema:"a label for the server, 2 to 255 characters"`
 		PlanID         string `json:"planId" jsonschema:"the plan, an id from list_server_plans"`
@@ -234,7 +234,7 @@ func stripUsdFields(item map[string]any) {
 	}
 }
 
-func orderServer(ctx context.Context, deps *Deps, call *Call, name, planId, regionCode, osId, billingCycle, idempotencyKey string) (*ServerOrderResult, error) {
+func orderServer(ctx context.Context, deps *Deps, call *Call, name, planID, regionCode, osID, billingCycle, idempotencyKey string) (*ServerOrderResult, error) {
 	if err := requireIdempotencyKey(idempotencyKey); err != nil {
 		return nil, err
 	}
@@ -265,14 +265,14 @@ func orderServer(ctx context.Context, deps *Deps, call *Call, name, planId, regi
 	if err != nil {
 		return nil, err
 	}
-	choice, err := resolveServerChoice(cat, planId, regionCode, osId)
+	choice, err := resolveServerChoice(cat, planID, regionCode, osID)
 	if err != nil {
 		return nil, err
 	}
 
 	env, err := apiSend(ctx, deps, call, http.MethodPost, "/servers/orders", map[string]any{
-		"name": name, "regionCode": choice.Region.Code, "planId": choice.Plan.Id, "planName": choice.Plan.Name,
-		"osId": choice.OS.Id, "osName": choice.OS.Name, "osVersion": choice.OS.Version,
+		"name": name, "regionCode": choice.Region.Code, "planId": choice.Plan.ID, "planName": choice.Plan.Name,
+		"osId": choice.OS.ID, "osName": choice.OS.Name, "osVersion": choice.OS.Version,
 		"vcpu": choice.Plan.VCPU, "ramMb": choice.Plan.RAMMB, "storageGb": choice.Plan.StorageGB,
 		"billingCycle": cycle, "currency": currency,
 	}, idempotencyHeaders(key))
@@ -284,22 +284,22 @@ func orderServer(ctx context.Context, deps *Deps, call *Call, name, planId, regi
 		return nil, err
 	}
 	order = omitSecrets(order)
-	orderId := pick(order, "orderId")
-	if orderId == "" {
+	orderID := pick(order, "orderId")
+	if orderID == "" {
 		return nil, fmt.Errorf("the API accepted the order but returned no order id, so there is nothing to pay yet. Do not retry with a new idempotencyKey. Tell the customer and ask them to check their servers page")
 	}
 	orderCurrency := strings.ToUpper(pick(order, "currency"))
 	if orderCurrency == currencyDollar {
-		return dollarOrderResult(ctx, deps, call, order, orderId, choice, cycle), nil
+		return dollarOrderResult(ctx, deps, call, order, orderID, choice, cycle), nil
 	}
-	return nairaOrderResult(ctx, deps, call, order, orderId, checkoutKey)
+	return nairaOrderResult(ctx, deps, call, order, orderID, checkoutKey)
 }
 
-func nairaOrderResult(ctx context.Context, deps *Deps, call *Call, order map[string]any, orderId, checkoutKey string) (*ServerOrderResult, error) {
-	env, err := apiSend(ctx, deps, call, http.MethodPost, "/servers/orders/"+url.PathEscape(orderId)+"/checkout",
+func nairaOrderResult(ctx context.Context, deps *Deps, call *Call, order map[string]any, orderID, checkoutKey string) (*ServerOrderResult, error) {
+	env, err := apiSend(ctx, deps, call, http.MethodPost, "/servers/orders/"+url.PathEscape(orderID)+"/checkout",
 		map[string]any{}, idempotencyHeaders(checkoutKey))
 	if err != nil {
-		return nil, fmt.Errorf("the draft order %s was created, but its payment page could not be prepared: %w Retry with the same idempotencyKey: that returns this order and tries the payment page again", orderId, err)
+		return nil, fmt.Errorf("the draft order %s was created, but its payment page could not be prepared: %w Retry with the same idempotencyKey: that returns this order and tries the payment page again", orderID, err)
 	}
 	checkout, err := client.DecodeObject(env)
 	if err != nil {
@@ -307,11 +307,11 @@ func nairaOrderResult(ctx context.Context, deps *Deps, call *Call, order map[str
 	}
 	link := pick(checkout, "authorizationUrl", "paymentUrl", "checkoutUrl")
 	if link == "" {
-		return nil, fmt.Errorf("the draft order %s was created but the API returned no payment page for it. Tell the customer, and do not say a page is waiting. Retry with the same idempotencyKey", orderId)
+		return nil, fmt.Errorf("the draft order %s was created but the API returned no payment page for it. Tell the customer, and do not say a page is waiting. Retry with the same idempotencyKey", orderID)
 	}
 	return &ServerOrderResult{
 		Summary:    "Draft server order created and its payment page is ready.",
-		OrderID:    orderId,
+		OrderID:    orderID,
 		Currency:   currencyNaira,
 		PaymentURL: link,
 		Order:      order,
@@ -319,17 +319,17 @@ func nairaOrderResult(ctx context.Context, deps *Deps, call *Call, order map[str
 	}, nil
 }
 
-func dollarOrderResult(ctx context.Context, deps *Deps, call *Call, order map[string]any, orderId string, choice *serverChoice, cycle string) *ServerOrderResult {
+func dollarOrderResult(ctx context.Context, deps *Deps, call *Call, order map[string]any, orderID string, choice *serverChoice, cycle string) *ServerOrderResult {
 	out := &ServerOrderResult{
 		Summary:           "Draft server order created. The customer confirms the payment from their wallet on the portal.",
-		OrderID:           orderId,
+		OrderID:           orderID,
 		Currency:          currencyDollar,
 		PortalCheckoutURL: pick(order, "portalCheckoutUrl"),
 		Order:             order,
 	}
 	if out.PortalCheckoutURL == "" {
 		out.Summary = "Draft server order created, but the API gave no portal link for it."
-		out.NextStep = "Tell the customer plainly that the order exists (give the orderId) and that you could not produce the link where they confirm the payment. Do not invent a link. They can start the order again on the portal."
+		out.NextStep = "Tell the customer plainly that the order exists (give the orderID) and that you could not produce the link where they confirm the payment. Do not invent a link. They can start the order again on the portal."
 		return out
 	}
 
