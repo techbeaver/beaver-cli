@@ -122,8 +122,11 @@ func TestSandboxToolsExistAndAreClassifiedByWhatTheyDo(t *testing.T) {
 		t.Errorf("checkout scopes %v", got)
 	}
 	for name := range specs {
-		if strings.Contains(name, "sandbox") && !contains(sandboxToolNames, name) {
-			t.Errorf("tool %q is a sandbox tool the platform does not let machine credentials use", name)
+		if strings.Contains(name, "sandbox") && !contains(sandboxToolNames, name) && !contains(sandboxOpsToolNames, name) {
+			t.Errorf("tool %q is a sandbox tool nobody listed here", name)
+		}
+		if strings.Contains(name, "destroy") && strings.Contains(name, "sandbox") {
+			t.Errorf("tool %q: destroying a sandbox is not an MCP tool in this package", name)
 		}
 	}
 }
@@ -385,5 +388,273 @@ func TestSandboxToolsRunConcurrently(t *testing.T) {
 	}
 	if len(keys) != 12 {
 		t.Fatalf("each call must carry its own caller key, saw %d distinct", len(keys))
+	}
+}
+
+var sandboxOpsToolNames = []string{"list_sandboxes", "get_sandbox", "create_sandbox", "start_sandbox", "stop_sandbox",
+	"exec_in_sandbox", "read_sandbox_file", "write_sandbox_file", "list_sandbox_files"}
+
+const sbID = "77777777-6666-5555-4444-333333333333"
+
+var sandboxAll = append(append([]string{}, scopes.Default...), scopes.SandboxRead, scopes.SandboxWrite, scopes.SandboxFiles, scopes.SandboxExec)
+
+func opsHandler(w http.ResponseWriter, r *http.Request, _ int) {
+	switch {
+	case strings.HasSuffix(r.URL.Path, "/exec"):
+		sbJSON(w, `{"exitCode":0,"stdout":"hi\n","stderr":"","stdoutTruncated":false,"stderrTruncated":false,"timedOut":false,"durationMs":3}`)
+	case strings.HasSuffix(r.URL.Path, "/files/list"):
+		sbJSON(w, `{"path":"/workspace","entries":[{"name":"a.txt","type":"file","size":5,"modTime":"t"}],"truncated":true}`)
+	case strings.HasSuffix(r.URL.Path, "/files") && r.Method == http.MethodGet:
+		sbJSON(w, `{"path":"/workspace/a.txt","size":5,"encoding":"utf8","content":"hello"}`)
+	case strings.HasSuffix(r.URL.Path, "/files"):
+		sbJSON(w, `{"path":"/workspace/a.txt","bytes":5}`)
+	case r.URL.Path == "/api/v1/sandbox/sandboxes" && r.Method == http.MethodGet:
+		sbJSON(w, `[{"id":"`+sbID+`","name":"box","status":"running"}]`)
+	default:
+		sbJSON(w, `{"id":"`+sbID+`","name":"box","status":"running"}`)
+	}
+}
+
+func TestSandboxOpsToolsReachTheirRoutesAndKeepDataInDataFields(t *testing.T) {
+	session, api := connectSandbox(t, sandboxAll, opsHandler)
+	args := map[string]map[string]any{
+		"list_sandboxes":     {"projectId": sbProject, "includeDestroyed": true},
+		"get_sandbox":        {"sandboxId": sbID},
+		"create_sandbox":     {"projectId": sbProject, "name": "box", "idempotencyKey": "k-1", "subscriptionId": sbProject},
+		"start_sandbox":      {"sandboxId": sbID},
+		"stop_sandbox":       {"sandboxId": sbID},
+		"exec_in_sandbox":    {"sandboxId": sbID, "command": []string{"ls", "-la"}, "cwd": "/workspace", "timeoutSeconds": 5, "env": map[string]string{"A": "1"}, "stdin": "x"},
+		"read_sandbox_file":  {"sandboxId": sbID, "path": "/workspace/a.txt"},
+		"write_sandbox_file": {"sandboxId": sbID, "path": "/workspace/a.txt", "content": "hello"},
+		"list_sandbox_files": {"sandboxId": sbID, "path": "/workspace"},
+	}
+	want := map[string][3]string{
+		"list_sandboxes":     {"GET", "/sandbox/sandboxes", "includeDestroyed=true&projectId=" + sbProject},
+		"get_sandbox":        {"GET", "/sandbox/sandboxes/" + sbID, ""},
+		"create_sandbox":     {"POST", "/sandbox/sandboxes", ""},
+		"start_sandbox":      {"POST", "/sandbox/sandboxes/" + sbID + "/start", ""},
+		"stop_sandbox":       {"POST", "/sandbox/sandboxes/" + sbID + "/stop", ""},
+		"exec_in_sandbox":    {"POST", "/sandbox/sandboxes/" + sbID + "/exec", ""},
+		"read_sandbox_file":  {"GET", "/sandbox/sandboxes/" + sbID + "/files", "format=json&path=%2Fworkspace%2Fa.txt"},
+		"write_sandbox_file": {"PUT", "/sandbox/sandboxes/" + sbID + "/files", "format=json&parents=true&path=%2Fworkspace%2Fa.txt"},
+		"list_sandbox_files": {"GET", "/sandbox/sandboxes/" + sbID + "/files/list", "path=%2Fworkspace"},
+	}
+	for _, name := range sandboxOpsToolNames {
+		before := len(api.calls())
+		res := callTool(t, session, name, args[name])
+		if res.IsError {
+			t.Fatalf("%s: %s", name, resultText(res))
+		}
+		calls := api.calls()
+		if len(calls) != before+1 {
+			t.Fatalf("%s: expected one call", name)
+		}
+		c, w := calls[before], want[name]
+		if c.method != w[0] || c.path != w[1] || c.query != w[2] {
+			t.Errorf("%s: call %+v, want %v", name, c, w)
+		}
+		text := resultText(res)
+		if name == "create_sandbox" && c.idem != "k-1" {
+			t.Errorf("create must forward the key, got %q", c.idem)
+		}
+		if name != "create_sandbox" && c.idem != "" {
+			t.Errorf("%s must not carry a key", name)
+		}
+		if strings.Contains(text, "btk_") {
+			t.Errorf("%s leaked a credential", name)
+		}
+	}
+	text := resultText(callTool(t, session, "exec_in_sandbox", args["exec_in_sandbox"]))
+	if !strings.Contains(text, "untrusted") || !strings.Contains(text, `"stdout"`) {
+		t.Errorf("exec result must carry output as data and say it is untrusted: %s", text)
+	}
+	var body map[string]any
+	_ = json.Unmarshal([]byte(api.calls()[5].body), &body)
+	if cmd, _ := body["command"].([]any); len(cmd) != 2 || body["timeoutSeconds"] != float64(5) || body["stdin"] != "x" {
+		t.Errorf("exec body %s", api.calls()[5].body)
+	}
+	if lst := resultText(callTool(t, session, "list_sandbox_files", args["list_sandbox_files"])); !strings.Contains(lst, "cut at the limit") {
+		t.Errorf("a truncated listing must say so: %s", lst)
+	}
+}
+
+func TestSandboxOpsToolsRefuseBadInputBeforeTheNetwork(t *testing.T) {
+	session, api := connectSandbox(t, sandboxAll, opsHandler)
+	bad := map[string]map[string]any{
+		"get_sandbox":        {"sandboxId": "../x"},
+		"start_sandbox":      {"sandboxId": ""},
+		"create_sandbox":     {"projectId": sbProject, "name": "-bad", "idempotencyKey": "k"},
+		"exec_in_sandbox":    {"sandboxId": sbID},
+		"read_sandbox_file":  {"sandboxId": "x", "path": "/workspace/a"},
+		"list_sandbox_files": {"sandboxId": "x", "path": "/workspace"},
+	}
+	extra := []struct {
+		tool string
+		args map[string]any
+	}{
+		{"create_sandbox", map[string]any{"projectId": sbProject, "name": "ok"}},
+		{"create_sandbox", map[string]any{"projectId": sbProject, "name": strings.Repeat("a", 64), "idempotencyKey": "k"}},
+		{"create_sandbox", map[string]any{"projectId": sbProject, "name": "ok", "idempotencyKey": "k", "subscriptionId": "nope"}},
+		{"exec_in_sandbox", map[string]any{"sandboxId": sbID, "command": []string{"a"}, "shell": "b"}},
+		{"exec_in_sandbox", map[string]any{"sandboxId": sbID, "shell": "ls", "timeoutSeconds": 601}},
+		{"exec_in_sandbox", map[string]any{"sandboxId": sbID, "shell": "ls", "timeoutSeconds": -1}},
+	}
+	for tool, args := range bad {
+		res, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: tool, Arguments: args})
+		if err == nil && !res.IsError {
+			t.Errorf("%s %v must be refused", tool, args)
+		}
+	}
+	for _, e := range extra {
+		res, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: e.tool, Arguments: e.args})
+		if err == nil && !res.IsError {
+			t.Errorf("%s %v must be refused", e.tool, e.args)
+		}
+	}
+	if n := len(api.calls()); n != 0 {
+		t.Fatalf("refused calls reached the API %d times", n)
+	}
+	for _, name := range []string{"a", strings.Repeat("a", 63), "été"} {
+		res := callTool(t, session, "create_sandbox", map[string]any{"projectId": sbProject, "name": name, "idempotencyKey": "k"})
+		if res.IsError {
+			t.Errorf("%q must be accepted: %s", name, resultText(res))
+		}
+	}
+}
+
+func TestSandboxOpsToolsAreHiddenWithoutTheirScopes(t *testing.T) {
+	for _, tc := range []struct {
+		granted []string
+		visible []string
+		hidden  []string
+	}{
+		{[]string{scopes.SandboxRead}, []string{"list_sandboxes", "get_sandbox"}, []string{"create_sandbox", "start_sandbox", "exec_in_sandbox", "read_sandbox_file", "write_sandbox_file"}},
+		{[]string{scopes.SandboxRead, scopes.SandboxWrite}, []string{"create_sandbox", "stop_sandbox"}, []string{"exec_in_sandbox", "read_sandbox_file", "list_sandbox_files"}},
+		{[]string{scopes.SandboxFiles}, []string{"read_sandbox_file", "write_sandbox_file", "list_sandbox_files"}, []string{"exec_in_sandbox", "list_sandboxes"}},
+		{[]string{scopes.SandboxExec}, []string{"exec_in_sandbox", "read_sandbox_file", "write_sandbox_file"}, []string{"create_sandbox"}},
+	} {
+		session, _ := connectSandbox(t, tc.granted, opsHandler)
+		tools, err := session.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := map[string]bool{}
+		for _, tool := range tools.Tools {
+			seen[tool.Name] = true
+		}
+		for _, n := range tc.visible {
+			if !seen[n] {
+				t.Errorf("%v should see %s", tc.granted, n)
+			}
+		}
+		for _, n := range tc.hidden {
+			if seen[n] {
+				t.Errorf("%v must not see %s", tc.granted, n)
+			}
+		}
+	}
+}
+
+func TestSandboxOpsToolsAnnotations(t *testing.T) {
+	session, _ := connectSandbox(t, sandboxAll, opsHandler)
+	tools, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools.Tools {
+		switch tool.Name {
+		case "exec_in_sandbox", "write_sandbox_file":
+			if tool.Annotations.DestructiveHint == nil || !*tool.Annotations.DestructiveHint || tool.Annotations.ReadOnlyHint {
+				t.Errorf("%s must be flagged so a client asks first", tool.Name)
+			}
+		case "list_sandboxes", "get_sandbox", "read_sandbox_file", "list_sandbox_files":
+			if !tool.Annotations.ReadOnlyHint {
+				t.Errorf("%s is a read", tool.Name)
+			}
+		}
+	}
+}
+
+func TestSandboxOpsToolsMapTheNewErrorCodes(t *testing.T) {
+	cases := []struct {
+		status    int
+		code, msg string
+		want      string
+	}{
+		{409, "no_free_slot", "", "Every slot is in use"},
+		{409, "sandbox_not_running", "", "not running"},
+		{409, "sandbox_quarantined", "", "quarantined"},
+		{429, "sandbox_create_rate_limited", "Created too fast.", "Created too fast."},
+		{429, "sandbox_busy", "Busy.", "Busy."},
+		{502, "sandbox_agent_unreachable", "", "did not answer"},
+		{503, "sandbox_exec_unavailable", "", "not available yet"},
+		{503, "SERVICE_PAUSED", "Paused.", "do not retry"},
+		{503, "billing_unavailable", "x", "cannot be checked right now"},
+		{403, "insufficient_scope", "This token was not granted sandbox:exec.", "grant that permission"},
+	}
+	for _, tc := range cases {
+		session, _ := connectSandbox(t, sandboxAll, func(w http.ResponseWriter, _ *http.Request, _ int) { sbFailure(w, tc.status, tc.code, tc.msg) })
+		for tool, args := range map[string]map[string]any{
+			"get_sandbox":     {"sandboxId": sbID},
+			"exec_in_sandbox": {"sandboxId": sbID, "shell": "ls"},
+			"create_sandbox":  {"projectId": sbProject, "name": "box", "idempotencyKey": "k"},
+		} {
+			res := callTool(t, session, tool, args)
+			if !res.IsError || !strings.Contains(resultText(res), tc.want) {
+				t.Errorf("%s %s: %q", tool, tc.code, resultText(res))
+			}
+		}
+	}
+	gone := newGoneSession(t)
+	goneArgs := map[string]map[string]any{
+		"list_sandboxes": {}, "get_sandbox": {"sandboxId": sbID}, "start_sandbox": {"sandboxId": sbID}, "stop_sandbox": {"sandboxId": sbID},
+		"create_sandbox":  {"projectId": sbProject, "name": "b", "idempotencyKey": "k"},
+		"exec_in_sandbox": {"sandboxId": sbID, "shell": "ls"}, "read_sandbox_file": {"sandboxId": sbID, "path": "/workspace/a"},
+		"write_sandbox_file": {"sandboxId": sbID, "path": "/workspace/a", "content": "x"}, "list_sandbox_files": {"sandboxId": sbID, "path": "/workspace"},
+	}
+	for _, tool := range sandboxOpsToolNames {
+		res := callTool(t, gone, tool, goneArgs[tool])
+		if !res.IsError || !strings.Contains(resultText(res), "Sandboxes are not available on this server yet") {
+			t.Errorf("%s: %q", tool, resultText(res))
+		}
+	}
+}
+
+func newGoneSession(t *testing.T) *mcpsdk.ClientSession {
+	t.Helper()
+	session, _ := connectSandbox(t, sandboxAll, func(w http.ResponseWriter, r *http.Request, _ int) {
+		http.Error(w, "Cannot "+r.Method+" "+r.URL.Path, http.StatusNotFound)
+	})
+	return session
+}
+
+func TestSandboxExecAllowsALongTimeoutWithoutTheClientGivingUp(t *testing.T) {
+	session, api := connectSandbox(t, sandboxAll, opsHandler)
+	res := callTool(t, session, "exec_in_sandbox", map[string]any{"sandboxId": sbID, "shell": "sleep 1", "timeoutSeconds": 600})
+	if res.IsError || len(api.calls()) != 1 {
+		t.Fatalf("%s", resultText(res))
+	}
+}
+
+func TestSandboxOpsToolsRunConcurrently(t *testing.T) {
+	session, api := connectSandbox(t, sandboxAll, opsHandler)
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			name, args := "get_sandbox", map[string]any{"sandboxId": sbID}
+			if i%2 == 0 {
+				name, args = "exec_in_sandbox", map[string]any{"sandboxId": sbID, "command": []string{"true"}}
+			}
+			res, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: name, Arguments: args})
+			if err != nil || res.IsError {
+				t.Errorf("%s failed: %v", name, err)
+			}
+		}()
+	}
+	wg.Wait()
+	if len(api.calls()) != 12 {
+		t.Fatalf("calls %d", len(api.calls()))
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/techbeaver/beaver-cli/client"
+	"github.com/techbeaver/beaver-cli/scopes"
 )
 
 // Who a request is acting for, and what it is allowed to do.
@@ -43,12 +44,7 @@ func (i *Identity) Has(scope string) bool {
 	if i == nil {
 		return false
 	}
-	for _, s := range i.Scopes {
-		if s == scope {
-			return true
-		}
-	}
-	return false
+	return scopes.Has(i.Scopes, scope)
 }
 
 // HasAll reports whether the identity holds every scope. An empty requirement

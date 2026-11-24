@@ -45,8 +45,16 @@ func sandboxGet(ctx context.Context, deps *Deps, call *Call, path string, query 
 	return client.DecodeObject(env)
 }
 
-func sandboxSend(ctx context.Context, deps *Deps, call *Call, path string, body any, headers map[string]string) (map[string]any, error) {
-	env, err := deps.Client.Do(ctx, call.Session.Token, client.Request{Method: http.MethodPost, Path: path, Body: body, Headers: headers})
+func sandboxSend(ctx context.Context, deps *Deps, call *Call, method, path string, body any, headers map[string]string) (map[string]any, error) {
+	req := client.Request{Method: method, Path: path, Body: body, Headers: headers}
+	if before, rawQuery, ok := strings.Cut(path, "?"); ok {
+		q, err := url.ParseQuery(rawQuery)
+		if err != nil {
+			return nil, err
+		}
+		req.Path, req.Query = before, q
+	}
+	env, err := deps.Client.Do(ctx, call.Session.Token, req)
 	if err != nil {
 		return nil, describeSandboxError(err)
 	}
@@ -60,6 +68,7 @@ type sandboxPurchaseInput struct {
 }
 
 func registerSandboxTools(r *Registry) {
+	registerSandboxLifecycleTools(r)
 	register(r, toolSpec{
 		Name:     "list_sandbox_plans",
 		Title:    "List sandbox plans",
@@ -117,7 +126,7 @@ func registerSandboxTools(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		item, err := sandboxSend(ctx, deps, call, "/sandbox/billing/quote", body, nil)
+		item, err := sandboxSend(ctx, deps, call, http.MethodPost, "/sandbox/billing/quote", body, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -152,7 +161,7 @@ func registerSandboxTools(r *Registry) {
 		}
 		body["paymentSource"] = sandboxPaymentSourceCheckout
 		putIfSet(body, "successUrl", strings.TrimSpace(in.SuccessURL))
-		item, err := sandboxSend(ctx, deps, call, "/sandbox/billing/purchase", body, idempotencyHeaders(in.IdempotencyKey))
+		item, err := sandboxSend(ctx, deps, call, http.MethodPost, "/sandbox/billing/purchase", body, idempotencyHeaders(in.IdempotencyKey))
 		if err != nil {
 			return nil, err
 		}
