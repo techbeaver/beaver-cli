@@ -21,7 +21,7 @@ import (
 const sandboxJSON = `{"id":"` + testSandbox + `","projectId":"` + testProject + `","subscriptionId":"` + testSubID + `","planId":"` + testPlan + `",
 "name":"box","status":"running","vcpu":2,"memoryMb":4096,"diskGb":20,"idleStopMinutes":30,"maxRunHours":24,"createdAt":"2026-11-24T10:00:00Z"}`
 
-const execOKJSON = `{"exitCode":0,"stdout":"hi\n","stderr":"","stdoutTruncated":false,"stderrTruncated":false,"timedOut":false,"durationMs":5}`
+const execOKJSON = `{"status":"exited","exitCode":0,"stdout":"hi\n","stderr":"","stdoutTruncated":false,"stderrTruncated":false,"timedOut":false,"durationMs":5}`
 
 func okAll(w http.ResponseWriter, r *http.Request, _ int) {
 	p := r.URL.Path
@@ -433,7 +433,7 @@ func TestExecShellLineAndExactlyOneForm(t *testing.T) {
 }
 
 func TestExecTimeoutBounds(t *testing.T) {
-	for flag, want := range map[string]float64{"500ms": 1, "1s": 1, "1500ms": 2, "10m": 600, "600s": 600, "1ns": 1} {
+	for flag, want := range map[string]float64{"500ms": 1, "1s": 1, "1500ms": 2, "10m": 600, "601s": 601, "1h": 3600, "3600s": 3600, "1ns": 1} {
 		api := newSBServer(t, fixedSB(execOKJSON))
 		if _, _, err := execRun(t, api, "", testSandbox, "--timeout", flag, "--", "ls"); err != nil {
 			t.Fatalf("%s: %v", flag, err)
@@ -442,10 +442,10 @@ func TestExecTimeoutBounds(t *testing.T) {
 			t.Errorf("--timeout %s sent %v, want %v", flag, got, want)
 		}
 	}
-	for _, flag := range []string{"601s", "10m1s", "-5s"} {
+	for _, flag := range []string{"3601s", "1h1s", "-5s"} {
 		api := newSBServer(t, fixedSB(execOKJSON))
 		_, _, err := execRun(t, api, "", testSandbox, "--timeout", flag, "--", "ls")
-		if err == nil || exitcode.From(err) != exitcode.Usage || !strings.Contains(err.Error(), "between 1 and 600") || len(api.requests()) != 0 {
+		if err == nil || exitcode.From(err) != exitcode.Usage || !strings.Contains(err.Error(), "between 1 and 3600") || len(api.requests()) != 0 {
 			t.Errorf("--timeout %s: %v (%d requests)", flag, err, len(api.requests()))
 		}
 	}

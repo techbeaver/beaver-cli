@@ -33,7 +33,10 @@ func CheckName(raw string) (string, bool) {
 // Exec bounds the API states for a command.
 const (
 	ExecMinTimeoutSec = 1
-	ExecMaxTimeoutSec = 600
+	ExecMaxTimeoutSec = 3600
 	ExecMaxStdinBytes = 1 << 20
-	ExecTimeoutRule   = "timeoutSeconds is between 1 and 600."
+	// ExecMaxWaitSeconds bounds one call: the edge cuts a silent request, so none may run longer.
+	ExecMaxWaitSeconds   = 60
+	ExecFirstWaitSeconds = 30
+	ExecTimeoutRule      = "timeoutSeconds is between 1 and 3600."
 )

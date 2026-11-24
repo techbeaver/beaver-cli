@@ -682,6 +682,8 @@ var sandboxFailures = []failCase{
 	{"bare 500", 500, "", "", "problem on its side", exitcode.Error},
 }
 
+const testExec = "0123456789abcdef0123456789abcdef01234567"
+
 const testSandbox = "77777777-6666-5555-4444-333333333333"
 
 // sandboxInvocations has one entry per sandbox subcommand. A key may carry a variant in
@@ -717,6 +719,8 @@ func sandboxInvocations(t *testing.T) map[string][]string {
 		"stop":                {"sandbox", "stop", testSandbox},
 		"destroy":             {"sandbox", "destroy", testSandbox, "--yes"},
 		"exec":                {"sandbox", "exec", testSandbox, "--no-stdin", "--", "ls"},
+		"exec-status":         {"sandbox", "exec-status", testSandbox, testExec},
+		"exec-cancel":         {"sandbox", "exec-cancel", testSandbox, testExec},
 		"cp":                  {"sandbox", "cp", upload, testSandbox + ":/workspace/up.txt"},
 		"cp (download)":       {"sandbox", "cp", testSandbox + ":/workspace/up.txt", filepath.Join(dir, "down.txt")},
 		"ls":                  {"sandbox", "ls", testSandbox + ":/workspace"},

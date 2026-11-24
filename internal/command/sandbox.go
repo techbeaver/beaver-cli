@@ -48,6 +48,8 @@ func newSandboxCommand(env *Env) *cobra.Command {
 		newSandboxTransitionCommand(env, "stop", "Stop a sandbox and keep its disk"),
 		newSandboxDestroyCommand(env),
 		newSandboxExecCommand(env),
+		newSandboxExecStatusCommand(env),
+		newSandboxExecCancelCommand(env),
 		newSandboxCopyCommand(env),
 		newSandboxLsCommand(env),
 		newSandboxMkdirCommand(env),

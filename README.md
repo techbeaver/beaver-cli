@@ -85,9 +85,19 @@ beaver sandbox ls ID:/workspace
 beaver sandbox mkdir ID:/workspace/new
 ```
 
-`exec` exits with the remote command's status. A command that ran past `--timeout` (1 second to 10
-minutes) is killed and `beaver` exits 124. Output beyond 1 MiB per stream is cut and a warning is
-printed on stderr. `--json` prints the whole result.
+`exec` exits with the remote command's status. It waits 30 seconds, then polls (each call at most 60
+seconds, so nothing outlasts the edge) and prints the command's own output once, at the end. A command
+may run up to `--timeout` (1 second to 1 hour, default 2 minutes); past it, it is killed and `beaver`
+exits 124. Ctrl-C cancels the command and exits 130, and a second Ctrl-C leaves at once. Output beyond
+4 MiB per stream is cut and a warning is printed on stderr. `--json` prints the whole result.
+
+```sh
+beaver sandbox exec ID --detach -- ./long-job.sh     # prints the exec id and returns
+beaver sandbox exec-status ID EXEC_ID --wait 60      # running with its last output, or the result
+beaver sandbox exec-cancel ID EXEC_ID
+```
+
+Results are kept for 10 minutes after a command ends.
 
 Not available to the CLI, because the platform keeps those routes closed to tokens: remote file
 delete, subscription changes other than the add-slots quote (reduce, cancel, resume), by-the-hour
