@@ -35,6 +35,7 @@ func NewRoot(env *Env) *cobra.Command {
 		newAppsCommand(env),
 		newDBCommand(env),
 		newBillingCommand(env),
+		newSandboxCommand(env),
 		newMCPCommand(env),
 		newVersionCommand(env),
 	)

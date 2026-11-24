@@ -51,6 +51,8 @@ beaver apps env set LOG_LEVEL=debug        # other variables are kept; --replace
 beaver apps env list                       # names only, values are masked; --reveal needs secrets:read
 printf %s "$VALUE" | beaver apps env check DATABASE_URL   # is it set, does it match, without revealing it
 beaver billing invoices list
+beaver sandbox plans                       # sandbox commands need the project id: --project ID
+beaver sandbox buy --plan PLAN_ID --slots 2   # prints a payment link; beaver cannot pay
 ```
 
 Pin a project and application once, and the commands in that directory get shorter:
