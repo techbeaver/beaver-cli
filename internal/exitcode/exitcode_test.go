@@ -54,3 +54,15 @@ func TestAwaitingApprovalIsNotAFailure(t *testing.T) {
 		t.Fatal("a script must be able to tell 'slow down' from a failure")
 	}
 }
+
+func TestARemoteExitKeepsTheCommandsOwnCode(t *testing.T) {
+	for _, code := range []int{0, 1, 2, 7, 42, 124, 255} {
+		err := fmt.Errorf("wrapped: %w", &RemoteExit{Code: code})
+		if got := From(err); got != code {
+			t.Errorf("code %d came out as %d", code, got)
+		}
+	}
+	if (&RemoteExit{Code: 3}).Error() != "" {
+		t.Fatal("a bare remote exit prints nothing")
+	}
+}

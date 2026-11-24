@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/techbeaver/beaver-cli/client"
 )
@@ -114,5 +115,34 @@ func TestEveryStatusGetsAMessageAndNeverAnEmptyOne(t *testing.T) {
 				t.Fatalf("status %d must not read as a missing API", status)
 			}
 		}
+	}
+}
+
+func TestInsufficientScopeNamesTheScopeAndWhereToGrantIt(t *testing.T) {
+	with := Describe(&client.APIError{StatusCode: 403, Code: "insufficient_scope", Message: "x",
+		Data: map[string]any{"missingScope": []any{"sandbox:exec", "sandbox:files"}}}).Error()
+	for _, want := range []string{"sandbox:exec and sandbox:files", "agent connection", "--scope sandbox:exec,sandbox:files"} {
+		if !strings.Contains(with, want) {
+			t.Errorf("%q lacks %q", with, want)
+		}
+	}
+	without := Describe(&client.APIError{StatusCode: 403, Code: "insufficient_scope"}).Error()
+	if !strings.Contains(without, "agent connection") || strings.Contains(without, "--scope") {
+		t.Errorf("no scope named: %q", without)
+	}
+	odd := Describe(&client.APIError{StatusCode: 403, Code: "insufficient_scope", Data: map[string]any{"missingScope": "sandbox:read"}}).Error()
+	if !strings.Contains(odd, "agent connection") {
+		t.Errorf("a malformed data field must still give the grant message: %q", odd)
+	}
+}
+
+func TestRateLimitTellsTheWaitAndNeverOverstates(t *testing.T) {
+	got := Describe(&client.APIError{StatusCode: 429, Code: "sandbox_busy", Message: "Busy.", RetryAfter: 2 * time.Second}).Error()
+	if got != "Busy. Try again in 2 seconds." {
+		t.Errorf("got %q", got)
+	}
+	got = Describe(&client.APIError{StatusCode: 429, Code: "sandbox_busy", Message: "sandbox_busy"}).Error()
+	if strings.Contains(got, "sandbox_busy") {
+		t.Errorf("the code must not be the message: %q", got)
 	}
 }

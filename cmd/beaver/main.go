@@ -32,7 +32,9 @@ func main() {
 		if errors.Is(err, context.Canceled) {
 			os.Exit(exitcode.Error)
 		}
-		fmt.Fprintln(os.Stderr, "beaver:", cleanMessage(err))
+		if msg := cleanMessage(err); msg != "" {
+			fmt.Fprintln(os.Stderr, "beaver:", msg)
+		}
 		os.Exit(exitcode.From(err))
 	}
 }
