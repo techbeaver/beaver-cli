@@ -2,7 +2,9 @@ package command
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/techbeaver/beaver-cli/client"
@@ -24,18 +27,30 @@ func newSandboxCommand(env *Env) *cobra.Command {
 		Use:     "sandbox",
 		Aliases: []string{"sandboxes"},
 		Short:   "Sandbox plans, usage, quotes and buying slots",
-		Long: "Read what sandboxes cost and what a project uses, and get a payment link for slots.\n\n" +
+		Long: "Run and manage sandboxes, and get a payment link for slots.\n\n" +
 			"beaver cannot pay: buy prints a link that you open and pay yourself.\n\n" +
-			"Creating, starting, stopping and destroying sandboxes, and changing or cancelling a\n" +
-			"subscription, are not available to the CLI. The platform only lets machine credentials\n" +
-			"use the routes above, so do those in the console.",
+			"Most of these need sandbox scopes that are not in the default sign in. Grant them in the agent\n" +
+			"connection's permissions, or run beaver auth login --scope sandbox:read,sandbox:write.\n" +
+			"sandbox:exec runs commands, sandbox:files moves files, sandbox:destroy asks for deletion.\n" +
+			"Destroying always needs your approval in a browser.",
 	}
 	cmd.AddCommand(
 		newSandboxPlansCommand(env),
 		newSandboxUsageCommand(env),
 		newSandboxSubscriptionsCommand(env),
+		newSandboxAddSlotsCommand(env),
 		newSandboxQuoteCommand(env),
 		newSandboxBuyCommand(env),
+		newSandboxListCommand(env),
+		newSandboxGetCommand(env),
+		newSandboxCreateCommand(env),
+		newSandboxTransitionCommand(env, "start", "Start a stopped sandbox"),
+		newSandboxTransitionCommand(env, "stop", "Stop a sandbox and keep its disk"),
+		newSandboxDestroyCommand(env),
+		newSandboxExecCommand(env),
+		newSandboxCopyCommand(env),
+		newSandboxLsCommand(env),
+		newSandboxMkdirCommand(env),
 	)
 	return cmd
 }
@@ -51,8 +66,31 @@ func sandboxProject(s *Session) (string, error) {
 	return project, nil
 }
 
-func sandboxDo(s *Session, cmd *cobra.Command, req client.Request) (*client.Envelope, error) {
-	envelope, err := s.Client.Do(cmd.Context(), s.Token, req)
+// retryWait is how a rate limit pause is slept, replaceable in tests.
+var retryWait = sleepCtx
+
+// maxAutoRetryWait is the longest Retry-After worth waiting out inside one command.
+const maxAutoRetryWait = 10 * time.Second
+
+// retryOnce429 repeats a call one time when the server asked for a short wait.
+func retryOnce429[T any](ctx context.Context, env *Env, do func() (T, error)) (T, error) {
+	out, err := do()
+	var apiErr *client.APIError
+	if err == nil || !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusTooManyRequests ||
+		apiErr.RetryAfter <= 0 || apiErr.RetryAfter > maxAutoRetryWait {
+		return out, err
+	}
+	fmt.Fprintf(env.Err, "Rate limited. Trying once more in %d seconds.\n", int(apiErr.RetryAfter.Seconds()))
+	if !retryWait(ctx, apiErr.RetryAfter) {
+		return out, err
+	}
+	return do()
+}
+
+func sandboxDo(env *Env, s *Session, cmd *cobra.Command, req client.Request) (*client.Envelope, error) {
+	envelope, err := retryOnce429(cmd.Context(), env, func() (*client.Envelope, error) {
+		return s.Client.Do(cmd.Context(), s.Token, req)
+	})
 	if err != nil {
 		return nil, sandboxerr.Describe(err)
 	}
@@ -181,7 +219,7 @@ func newSandboxPlansCommand(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			envelope, err := sandboxDo(s, cmd, client.Request{Method: http.MethodGet, Path: "/sandbox/plans"})
+			envelope, err := sandboxDo(env, s, cmd, client.Request{Method: http.MethodGet, Path: "/sandbox/plans"})
 			if err != nil {
 				return err
 			}
@@ -267,7 +305,7 @@ func fetchUsage(env *Env, cmd *cobra.Command) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	envelope, err := sandboxDo(s, cmd, client.Request{
+	envelope, err := sandboxDo(env, s, cmd, client.Request{
 		Method: http.MethodGet, Path: "/sandbox/usage", Query: url.Values{"projectId": {project}},
 	})
 	if err != nil {
@@ -409,40 +447,119 @@ func newSandboxSubscriptionsCommand(env *Env) *cobra.Command {
 		Use:     "subscriptions [ID]",
 		Aliases: []string{"subscription"},
 		Short:   "List a project's sandbox subscriptions, or show one",
-		Long:    "Shows the subscriptions the usage view of the project reports: slots bought and in use, price and next charge.",
+		Long:    "Shows slots bought and in use, price and next charge. Listing needs a project; showing one needs only its id.",
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			obj, err := fetchUsage(env, cmd)
+			s, err := env.Authenticate(cmd.Context())
 			if err != nil {
 				return err
 			}
-			subs := asList(obj["subscriptions"])
 			spec, human, err := env.outputSpec()
 			if err != nil {
 				return err
 			}
 			w := output.New(env.Out, spec)
 			if len(args) == 1 {
-				for _, sub := range subs {
-					if text(sub["id"]) != args[0] {
-						continue
-					}
-					if !human {
-						return w.Object(sub)
-					}
-					return w.Object(subscriptionDisplay(sub))
+				id, err := uuidArg("subscription id", args[0])
+				if err != nil {
+					return err
 				}
-				return &client.APIError{StatusCode: http.StatusNotFound, Message: "Subscription not found in this project."}
+				envelope, err := sandboxDo(env, s, cmd, client.Request{Method: http.MethodGet, Path: "/sandbox/subscriptions/" + url.PathEscape(id)})
+				if err != nil {
+					return err
+				}
+				sub, err := sandboxObject(envelope)
+				if err != nil {
+					return err
+				}
+				if !human {
+					return w.Object(sub)
+				}
+				return w.Object(subscriptionDisplay(sub))
+			}
+			project, err := sandboxProject(s)
+			if err != nil {
+				return err
+			}
+			envelope, err := sandboxDo(env, s, cmd, client.Request{
+				Method: http.MethodGet, Path: "/sandbox/subscriptions", Query: url.Values{"projectId": {project}},
+			})
+			if err != nil {
+				return err
+			}
+			subs, err := sandboxList(envelope)
+			if err != nil {
+				return err
 			}
 			if !human {
-				if subs == nil {
-					subs = []map[string]any{}
-				}
 				return w.List(subs)
 			}
 			return w.List(subscriptionRows(subs), subscriptionColumns...)
 		},
 	}
+}
+
+func uuidArg(what, raw string) (string, error) {
+	if !uuidPattern.MatchString(raw) {
+		return "", usageErr("%s must be an id like 11111111-2222-3333-4444-555555555555, got %q", what, raw)
+	}
+	return raw, nil
+}
+
+func newSandboxAddSlotsCommand(env *Env) *cobra.Command {
+	cmd := &cobra.Command{Use: "add-slots", Short: "Price adding slots to a subscription"}
+	var slots int
+	quote := &cobra.Command{
+		Use:   "quote SUBSCRIPTION_ID",
+		Short: "Price adding slots to a subscription for the rest of its period",
+		Long:  "Works out the prorated cost of adding slots now. It creates nothing and charges nothing.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := uuidArg("subscription id", args[0])
+			if err != nil {
+				return err
+			}
+			if slots < 1 {
+				return usageErr("--slots must be a whole number of at least 1, got %d", slots)
+			}
+			s, err := env.Authenticate(cmd.Context())
+			if err != nil {
+				return err
+			}
+			envelope, err := sandboxDo(env, s, cmd, client.Request{
+				Method: http.MethodPost, Path: "/sandbox/subscriptions/" + url.PathEscape(id) + "/add-slots/quote",
+				Body: map[string]any{"slots": slots},
+			})
+			if err != nil {
+				return err
+			}
+			obj, err := sandboxObject(envelope)
+			if err != nil {
+				return err
+			}
+			spec, human, err := env.outputSpec()
+			if err != nil {
+				return err
+			}
+			if !human {
+				return output.New(env.Out, spec).Object(obj)
+			}
+			cur := text(obj["currency"])
+			return printPairs(env.Out, []pair{
+				{"Plan", text(obj["planName"])},
+				{"Slots added", text(obj["slots"])},
+				{"Days charged", text(obj["daysCharged"])},
+				{"Subtotal", formatMinor(obj["subtotalMinor"], cur)},
+				{"Tax", formatMinor(obj["taxMinor"], cur)},
+				{"Total", formatMinor(obj["totalMinor"], cur)},
+				{"Period", text(obj["periodStart"]) + " to " + text(obj["periodEnd"])},
+				{"Wallet available", formatMinor(obj["walletAvailableMinor"], cur)},
+			})
+		},
+	}
+	quote.Flags().IntVar(&slots, "slots", 0, "how many slots to add, at least 1")
+	cmd.AddCommand(quote)
+	return cmd
 }
 
 type purchaseFlags struct {
@@ -488,7 +605,7 @@ func newSandboxQuoteCommand(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			envelope, err := sandboxDo(s, cmd, client.Request{Method: http.MethodPost, Path: "/sandbox/billing/quote", Body: body})
+			envelope, err := sandboxDo(env, s, cmd, client.Request{Method: http.MethodPost, Path: "/sandbox/billing/quote", Body: body})
 			if err != nil {
 				return err
 			}

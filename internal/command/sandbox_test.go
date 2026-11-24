@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +29,7 @@ const (
 type sbRequest struct {
 	method, path, query, auth, idem string
 	body                            string
+	confirm, contentType            string
 }
 
 type sbServer struct {
@@ -44,6 +47,7 @@ func newSBServer(t *testing.T, h func(w http.ResponseWriter, r *http.Request, n 
 		s.reqs = append(s.reqs, sbRequest{
 			method: r.Method, path: strings.TrimPrefix(r.URL.Path, "/api/v1"), query: r.URL.RawQuery,
 			auth: r.Header.Get("Authorization"), idem: r.Header.Get("Idempotency-Key"), body: string(raw),
+			confirm: r.Header.Get("X-Confirmation-Token"), contentType: r.Header.Get("Content-Type"),
 		})
 		n := len(s.reqs)
 		s.mu.Unlock()
@@ -74,12 +78,19 @@ func sbOK(w http.ResponseWriter, raw string) {
 }
 
 func sbFail(w http.ResponseWriter, status int, code, message string) {
+	sbFailWith(w, status, code, message, nil)
+}
+
+func sbFailWith(w http.ResponseWriter, status int, code, message string, data map[string]any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	body := map[string]any{"status": status, "success": false, "message": message}
 	if code != "" {
 		body["code"] = code
 		body["error"] = code
+	}
+	if data != nil {
+		body["data"] = data
 	}
 	_ = json.NewEncoder(w).Encode(body)
 }
@@ -312,37 +323,90 @@ func TestProjectSelectionForSandboxCommands(t *testing.T) {
 	}
 }
 
-func TestSubscriptionsListAndGet(t *testing.T) {
-	api := newSBServer(t, fixedSB(usageJSON))
+const subJSON = `{"id":"` + testSubID + `","projectId":"` + testProject + `","planId":"` + testPlan + `","planName":"Small","billingMode":"monthly",
+"status":"active","slots":3,"slotsInUse":1,"cancelAtPeriodEnd":false,"currency":"NGN","unitMonthlyMinor":150000,"hourlyMinor":500,
+"currentPeriodEnd":"2026-12-01T00:00:00Z","nextChargeMinor":450000,"nextChargeSlots":3}`
+
+func TestSubscriptionsListAndGetUseTheirOwnRoutes(t *testing.T) {
+	api := newSBServer(t, func(w http.ResponseWriter, r *http.Request, _ int) {
+		if strings.HasSuffix(r.URL.Path, testSubID) {
+			sbOK(w, subJSON)
+			return
+		}
+		sbOK(w, `[`+subJSON+`]`)
+	})
 	out, _, err := sbRun(t, api, "sandbox", "subscriptions", "--project", testProject, "--format", "table")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if r := api.requests()[0]; r.method != "GET" || r.path != "/sandbox/subscriptions" || r.query != "projectId="+testProject {
+		t.Fatalf("list request %+v", r)
 	}
 	for _, want := range []string{testSubID, "Small", "NGN 1,500.00", "NGN 4,500.00"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("list lacks %q:\n%s", want, out)
 		}
 	}
-	out, _, err = sbRun(t, api, "sandbox", "subscriptions", testSubID, "--project", testProject)
+	out, _, err = sbRun(t, api, "sandbox", "subscriptions", testSubID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if r := api.requests()[1]; r.method != "GET" || r.path != "/sandbox/subscriptions/"+testSubID || r.query != "" {
+		t.Fatalf("get request %+v", r)
+	}
 	var one map[string]any
 	if json.Unmarshal([]byte(out), &one) != nil || one["id"] != testSubID {
-		t.Fatalf("get must return the one subscription as the API gave it: %q", out)
+		t.Fatalf("get must return the subscription as the API gave it: %q", out)
 	}
-	out, _, _ = sbRun(t, api, "sandbox", "subscriptions", testSubID, "--project", testProject, "--format", "table")
+	out, _, _ = sbRun(t, api, "sandbox", "subscriptions", testSubID, "--format", "table")
 	if !strings.Contains(out, "NGN 4,500.00") {
 		t.Fatalf("detail view lacks the formatted next charge:\n%s", out)
 	}
-	_, _, err = sbRun(t, api, "sandbox", "subscriptions", "nope", "--project", testProject)
-	if err == nil || exitcode.From(err) != exitcode.NotFound {
+	if _, _, err = sbRun(t, api, "sandbox", "subscriptions", "nope"); err == nil || exitcode.From(err) != exitcode.Usage {
+		t.Fatalf("a malformed id is a usage error, got %v", err)
+	}
+	missing := newSBServer(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
+		sbFail(w, 404, "", "Sandbox subscription not found")
+	})
+	if _, _, err = sbRun(t, missing, "sandbox", "subscriptions", testSubID); err == nil || exitcode.From(err) != exitcode.NotFound {
 		t.Fatalf("an unknown subscription must exit %d, got %v", exitcode.NotFound, err)
 	}
-	empty := newSBServer(t, fixedSB(`{"projectId":"p","subscriptions":[],"usage":[]}`))
+	empty := newSBServer(t, fixedSB(`[]`))
 	out, _, err = sbRun(t, empty, "sandbox", "subscriptions", "--project", testProject)
 	if err != nil || strings.TrimSpace(out) != "[]" {
 		t.Fatalf("no subscriptions must be an empty list, got %q (%v)", out, err)
+	}
+	plain := newSBServer(t, fixedSB(`[{"id":"x","planName":"Small","slots":2,"slotsInUse":0,"status":"active"}]`))
+	if _, _, err = sbRun(t, plain, "sandbox", "subscriptions", "--project", testProject, "--format", "table"); err != nil {
+		t.Fatalf("the plain view without billing fields must render: %v", err)
+	}
+}
+
+func TestAddSlotsQuote(t *testing.T) {
+	api := newSBServer(t, fixedSB(`{"planName":"Small","slots":2,"currency":"NGN","subtotalMinor":1000,"taxMinor":75,"totalMinor":1075,"daysCharged":12,"walletAvailableMinor":null}`))
+	out, _, err := sbRun(t, api, "sandbox", "add-slots", "quote", testSubID, "--slots", "2", "--format", "table")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := api.only(t)
+	if r.method != "POST" || r.path != "/sandbox/subscriptions/"+testSubID+"/add-slots/quote" || r.body != `{"slots":2}` || r.idem != "" {
+		t.Fatalf("request %+v", r)
+	}
+	for _, want := range []string{"NGN 10.75", "12", "NGN 0.75"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("lacks %q:\n%s", want, out)
+		}
+	}
+	for _, args := range [][]string{
+		{"sandbox", "add-slots", "quote", testSubID, "--slots", "0"},
+		{"sandbox", "add-slots", "quote", "nope", "--slots", "1"},
+	} {
+		if _, _, err := sbRun(t, api, args...); err == nil || exitcode.From(err) != exitcode.Usage {
+			t.Fatalf("%v: want usage error, got %v", args, err)
+		}
+	}
+	if len(api.requests()) != 1 {
+		t.Fatal("a refused quote reached the network")
 	}
 }
 
@@ -595,7 +659,7 @@ type failCase struct {
 var sandboxFailures = []failCase{
 	{"unauthorized", 401, "", "Unauthorized", "beaver auth login", exitcode.Unauthenticated},
 	{"forbidden", 403, "forbidden", "You do not have access to this project.", "You do not have access to this project.", exitcode.Unauthenticated},
-	{"insufficient scope", 403, "insufficient_scope", "This needs billing:read.", "billing:read", exitcode.Unauthenticated},
+	{"insufficient scope", 403, "insufficient_scope", "This needs billing:read.", "agent connection", exitcode.Unauthenticated},
 	{"route not permitted", 403, "route_not_permitted", "no", "does not allow the CLI", exitcode.Unauthenticated},
 	{"agent cannot pay", 403, "agent_cannot_pay", "x", "cannot pay", exitcode.Unauthenticated},
 	{"project not found", 404, "", "Project not found", "Project not found", exitcode.NotFound},
@@ -618,23 +682,55 @@ var sandboxFailures = []failCase{
 	{"bare 500", 500, "", "", "problem on its side", exitcode.Error},
 }
 
-func sandboxInvocations() map[string][]string {
-	common := []string{"--project", testProject}
-	buy := append([]string{"sandbox", "buy", "--plan", testPlan, "--slots", "1"}, common...)
+const testSandbox = "77777777-6666-5555-4444-333333333333"
+
+// sandboxInvocations has one entry per sandbox subcommand. A key may carry a variant in
+// parentheses: the part before it names the command it covers.
+func sandboxInvocations(t *testing.T) map[string][]string {
+	t.Helper()
+	dir := t.TempDir()
+	upload := filepath.Join(dir, "up.txt")
+	if err := os.WriteFile(upload, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	project := []string{"--project", testProject}
+	cat := func(parts ...[]string) []string {
+		var out []string
+		for _, p := range parts {
+			out = append(out, p...)
+		}
+		return out
+	}
 	return map[string][]string{
-		"plans":         {"sandbox", "plans"},
-		"plans list":    {"sandbox", "plans", "list"},
-		"usage":         append([]string{"sandbox", "usage"}, common...),
-		"subscriptions": append([]string{"sandbox", "subscriptions"}, common...),
-		"quote":         append([]string{"sandbox", "quote", "--plan", testPlan, "--slots", "1"}, common...),
-		"buy":           buy,
+		"plans":               {"sandbox", "plans"},
+		"plans list":          {"sandbox", "plans", "list"},
+		"usage":               cat([]string{"sandbox", "usage"}, project),
+		"subscriptions":       cat([]string{"sandbox", "subscriptions"}, project),
+		"subscriptions (get)": {"sandbox", "subscriptions", testSubID},
+		"add-slots quote":     {"sandbox", "add-slots", "quote", testSubID, "--slots", "1"},
+		"quote":               cat([]string{"sandbox", "quote", "--plan", testPlan, "--slots", "1"}, project),
+		"buy":                 cat([]string{"sandbox", "buy", "--plan", testPlan, "--slots", "1"}, project),
+		"list":                cat([]string{"sandbox", "list"}, project),
+		"get":                 {"sandbox", "get", testSandbox},
+		"create":              cat([]string{"sandbox", "create", "box"}, project),
+		"start":               {"sandbox", "start", testSandbox},
+		"stop":                {"sandbox", "stop", testSandbox},
+		"destroy":             {"sandbox", "destroy", testSandbox, "--yes"},
+		"exec":                {"sandbox", "exec", testSandbox, "--no-stdin", "--", "ls"},
+		"cp":                  {"sandbox", "cp", upload, testSandbox + ":/workspace/up.txt"},
+		"cp (download)":       {"sandbox", "cp", testSandbox + ":/workspace/up.txt", filepath.Join(dir, "down.txt")},
+		"ls":                  {"sandbox", "ls", testSandbox + ":/workspace"},
+		"mkdir":               {"sandbox", "mkdir", testSandbox + ":/workspace/new"},
 	}
 }
+
+// rawAnswerOK names invocations that do not read the answer's body as an object.
+func rawAnswerOK(name string) bool { return strings.HasPrefix(name, "cp") }
 
 func TestEverySandboxCommandMapsEveryFailureToOneCalmLine(t *testing.T) {
 	fastBackoff(t)
 	for _, fc := range sandboxFailures {
-		for name, args := range sandboxInvocations() {
+		for name, args := range sandboxInvocations(t) {
 			t.Run(fc.name+"/"+name, func(t *testing.T) {
 				api := newSBServer(t, func(w http.ResponseWriter, _ *http.Request, _ int) { sbFail(w, fc.status, fc.code, fc.message) })
 				_, _, err := sbRun(t, api, args...)
@@ -671,14 +767,14 @@ func TestMalformedAnswersAreReportedNotCrashed(t *testing.T) {
 		"data is a list":   `{"status":200,"success":true,"data":[1,2]}`,
 	}
 	for name, body := range bodies {
-		for cmdName, args := range sandboxInvocations() {
+		for cmdName, args := range sandboxInvocations(t) {
 			t.Run(name+"/"+cmdName, func(t *testing.T) {
 				api := newSBServer(t, func(w http.ResponseWriter, _ *http.Request, _ int) {
 					w.Header().Set("Content-Type", "application/json")
 					_, _ = io.WriteString(w, body)
 				})
 				_, _, err := sbRun(t, api, args...)
-				if name == "data is a list" && (cmdName == "plans" || cmdName == "plans list") {
+				if (name == "data is a list" && (cmdName == "plans" || cmdName == "plans list" || cmdName == "list" || cmdName == "subscriptions")) || rawAnswerOK(cmdName) {
 					return
 				}
 				if err == nil {
@@ -767,21 +863,24 @@ func TestEverySandboxSubcommandFailsCalmlyWhenTheServerHasNoSandboxAPI(t *testin
 			_, _ = io.WriteString(w, "<html><body>404</body></html>")
 		},
 	}
-	invocations := sandboxInvocations()
+	invocations := sandboxInvocations(t)
 	root := NewRoot(&Env{})
 	leaves := allSandboxLeaves(root)
 	covered := map[string]bool{}
 	for name := range invocations {
 		covered[name] = true
 	}
-	for leaf := range leaves {
-		if !covered[leaf] {
-			t.Errorf("sandbox %q has no entry in sandboxInvocations, so the 404 guard does not cover it", leaf)
+	bases := map[string]bool{}
+	for name := range covered {
+		base, _, _ := strings.Cut(name, " (")
+		bases[base] = true
+		if !leaves[base] {
+			t.Errorf("sandboxInvocations names %q, which is not a sandbox command", base)
 		}
 	}
-	for covers := range covered {
-		if !leaves[covers] {
-			t.Errorf("sandboxInvocations names %q, which is not a sandbox command", covers)
+	for leaf := range leaves {
+		if !bases[leaf] {
+			t.Errorf("sandbox %q has no entry in sandboxInvocations, so the guards do not cover it", leaf)
 		}
 	}
 	for flavour, handler := range flavours {
@@ -819,23 +918,14 @@ func TestEverySandboxSubcommandFailsCalmlyWhenTheServerHasNoSandboxAPI(t *testin
 }
 
 func TestSandboxCommandsRunConcurrentlyWithoutSharedState(t *testing.T) {
-	api := newSBServer(t, func(w http.ResponseWriter, r *http.Request, _ int) {
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/plans"):
-			sbOK(w, plansJSON)
-		case strings.HasSuffix(r.URL.Path, "/usage"):
-			sbOK(w, usageJSON)
-		case strings.HasSuffix(r.URL.Path, "/quote"):
-			sbOK(w, quoteJSON)
-		default:
-			sbOK(w, purchaseJSON)
-		}
-	})
-	invocations := sandboxInvocations()
+	api := newSBServer(t, okAll)
 	var wg sync.WaitGroup
-	errs := make(chan error, 64)
+	errs := make(chan error, 256)
 	for i := 0; i < 8; i++ {
-		for name, args := range invocations {
+		for name, args := range sandboxInvocations(t) {
+			if name == "destroy" {
+				continue
+			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -850,7 +940,7 @@ func TestSandboxCommandsRunConcurrentlyWithoutSharedState(t *testing.T) {
 					errs <- fmt.Errorf("%s: %w", name, err)
 					return
 				}
-				if out.Len() == 0 {
+				if out.Len() == 0 && name != "exec" {
 					errs <- fmt.Errorf("%s: no output", name)
 				}
 			}()
@@ -877,7 +967,7 @@ func TestSandboxCommandsRunConcurrentlyWithoutSharedState(t *testing.T) {
 
 func TestSandboxCommandsNeverEchoTheCredentialEvenWithDebug(t *testing.T) {
 	api := newSBServer(t, func(w http.ResponseWriter, _ *http.Request, _ int) { sbFail(w, 500, "", "boom") })
-	for name, args := range sandboxInvocations() {
+	for name, args := range sandboxInvocations(t) {
 		env, out, errBuf := newTestEnv(t, api.URL)
 		err := run(t, env, append(args, "--debug")...)
 		all := out.String() + errBuf.String()
@@ -890,16 +980,21 @@ func TestSandboxCommandsNeverEchoTheCredentialEvenWithDebug(t *testing.T) {
 	}
 }
 
-func TestSandboxHelpDoesNotPromiseWhatTheCLICannotDo(t *testing.T) {
+func TestSandboxOffersNoCommandTheCLICannotUse(t *testing.T) {
 	root := NewRoot(&Env{})
 	for _, c := range root.Commands() {
 		if c.Name() != "sandbox" {
 			continue
 		}
-		for _, banned := range []string{"create", "destroy", "start", "stop", "cancel", "resume", "hourly", "add-slots", "reduce-slots"} {
-			for _, sub := range c.Commands() {
-				if sub.Name() == banned {
-					t.Errorf("sandbox %s exists, but the platform does not let the CLI use that route", banned)
+		for _, sub := range c.Commands() {
+			switch sub.Name() {
+			case "cancel", "resume", "hourly", "reduce-slots", "rm", "delete":
+				t.Errorf("sandbox %s exists, but the platform does not let machine credentials use that route", sub.Name())
+			case "add-slots":
+				for _, inner := range sub.Commands() {
+					if inner.Name() != "quote" {
+						t.Errorf("sandbox add-slots %s exists, but only the quote route is open to tokens", inner.Name())
+					}
 				}
 			}
 		}

@@ -19,6 +19,7 @@ func NewRoot(env *Env) *cobra.Command {
 	root.SetOut(env.Out)
 	root.SetErr(env.Err)
 	root.SetIn(env.In)
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageErr("%s", err) })
 
 	f := root.PersistentFlags()
 	f.StringVar(&env.flags.format, "format", "", "output format: json, yaml, table or value(field,...)")

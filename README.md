@@ -51,9 +51,47 @@ beaver apps env set LOG_LEVEL=debug        # other variables are kept; --replace
 beaver apps env list                       # names only, values are masked; --reveal needs secrets:read
 printf %s "$VALUE" | beaver apps env check DATABASE_URL   # is it set, does it match, without revealing it
 beaver billing invoices list
-beaver sandbox plans                       # sandbox commands need the project id: --project ID
-beaver sandbox buy --plan PLAN_ID --slots 2   # prints a payment link; beaver cannot pay
 ```
+
+## Sandboxes
+
+Sandboxes need scopes that the default sign in does not include. Tick them in the agent connection's
+permissions, or sign in with them:
+
+```sh
+beaver auth login --scope sandbox:read,sandbox:write,sandbox:files,sandbox:exec,sandbox:destroy,billing:read,billing:checkout,projects:read
+```
+
+`sandbox:exec` also covers files. Sandbox commands take the project id (not its name): `--project ID`.
+
+```sh
+beaver sandbox plans                                  # plans and prices, read live
+beaver sandbox quote --plan PLAN_ID --slots 2         # what it costs your account
+beaver sandbox buy --plan PLAN_ID --slots 2           # prints a payment link; beaver cannot pay
+beaver sandbox usage                                  # balance, hourly burn, hours remaining
+beaver sandbox subscriptions                          # slots bought and in use
+beaver sandbox add-slots quote SUBSCRIPTION_ID --slots 1
+
+beaver sandbox create "my box"                        # uses a free slot, sends an Idempotency-Key
+beaver sandbox list | get ID | start ID | stop ID
+beaver sandbox destroy ID                             # needs your approval in a browser, like apps and databases
+
+beaver sandbox exec ID -- python3 -c 'print(1)'       # stdout, stderr and the exit status are the command's own
+beaver sandbox exec ID --sh 'make test | tail' --timeout 5m --cwd /workspace/app --env CI=1
+echo data | beaver sandbox exec ID -- wc -c           # stdin is sent when it is a pipe (--no-stdin to skip)
+beaver sandbox cp ./app.tar ID:/workspace/app.tar     # uploads in 3 MiB chunks
+beaver sandbox cp ID:/workspace/out.log ./out.log     # streamed; --force to replace a local file
+beaver sandbox ls ID:/workspace
+beaver sandbox mkdir ID:/workspace/new
+```
+
+`exec` exits with the remote command's status. A command that ran past `--timeout` (1 second to 10
+minutes) is killed and `beaver` exits 124. Output beyond 1 MiB per stream is cut and a warning is
+printed on stderr. `--json` prints the whole result.
+
+Not available to the CLI, because the platform keeps those routes closed to tokens: remote file
+delete, subscription changes other than the add-slots quote (reduce, cancel, resume), by-the-hour
+activation and events. `buy` only returns a payment link: paying from a balance is not offered.
 
 Pin a project and application once, and the commands in that directory get shorter:
 
