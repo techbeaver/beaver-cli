@@ -392,7 +392,9 @@ func TestSandboxToolsRunConcurrently(t *testing.T) {
 }
 
 var sandboxOpsToolNames = []string{"list_sandboxes", "get_sandbox", "create_sandbox", "start_sandbox", "stop_sandbox",
-	"exec_in_sandbox", "read_sandbox_file", "write_sandbox_file", "list_sandbox_files"}
+	"exec_in_sandbox", "get_sandbox_exec", "cancel_sandbox_exec", "read_sandbox_file", "write_sandbox_file", "list_sandbox_files"}
+
+const sbExec = "0123456789abcdef0123456789abcdef01234567"
 
 const sbID = "77777777-6666-5555-4444-333333333333"
 
@@ -400,8 +402,10 @@ var sandboxAll = append(append([]string{}, scopes.Default...), scopes.SandboxRea
 
 func opsHandler(w http.ResponseWriter, r *http.Request, _ int) {
 	switch {
+	case strings.HasSuffix(r.URL.Path, "/exec") && r.Header.Get("X-Test-Running") != "":
+		sbJSON(w, `{"status":"running"}`)
 	case strings.HasSuffix(r.URL.Path, "/exec"):
-		sbJSON(w, `{"exitCode":0,"stdout":"hi\n","stderr":"","stdoutTruncated":false,"stderrTruncated":false,"timedOut":false,"durationMs":3}`)
+		sbJSON(w, `{"status":"exited","exitCode":0,"stdout":"hi\n","stderr":"","stdoutTruncated":false,"stderrTruncated":false,"timedOut":false,"durationMs":3}`)
 	case strings.HasSuffix(r.URL.Path, "/files/list"):
 		sbJSON(w, `{"path":"/workspace","entries":[{"name":"a.txt","type":"file","size":5,"modTime":"t"}],"truncated":true}`)
 	case strings.HasSuffix(r.URL.Path, "/files") && r.Method == http.MethodGet:
@@ -418,26 +422,30 @@ func opsHandler(w http.ResponseWriter, r *http.Request, _ int) {
 func TestSandboxOpsToolsReachTheirRoutesAndKeepDataInDataFields(t *testing.T) {
 	session, api := connectSandbox(t, sandboxAll, opsHandler)
 	args := map[string]map[string]any{
-		"list_sandboxes":     {"projectId": sbProject, "includeDestroyed": true},
-		"get_sandbox":        {"sandboxId": sbID},
-		"create_sandbox":     {"projectId": sbProject, "name": "box", "idempotencyKey": "k-1", "subscriptionId": sbProject},
-		"start_sandbox":      {"sandboxId": sbID},
-		"stop_sandbox":       {"sandboxId": sbID},
-		"exec_in_sandbox":    {"sandboxId": sbID, "command": []string{"ls", "-la"}, "cwd": "/workspace", "timeoutSeconds": 5, "env": map[string]string{"A": "1"}, "stdin": "x"},
-		"read_sandbox_file":  {"sandboxId": sbID, "path": "/workspace/a.txt"},
-		"write_sandbox_file": {"sandboxId": sbID, "path": "/workspace/a.txt", "content": "hello"},
-		"list_sandbox_files": {"sandboxId": sbID, "path": "/workspace"},
+		"list_sandboxes":      {"projectId": sbProject, "includeDestroyed": true},
+		"get_sandbox":         {"sandboxId": sbID},
+		"create_sandbox":      {"projectId": sbProject, "name": "box", "idempotencyKey": "k-1", "subscriptionId": sbProject},
+		"start_sandbox":       {"sandboxId": sbID},
+		"stop_sandbox":        {"sandboxId": sbID},
+		"exec_in_sandbox":     {"sandboxId": sbID, "command": []string{"ls", "-la"}, "cwd": "/workspace", "timeoutSeconds": 5, "env": map[string]string{"A": "1"}, "stdin": "x"},
+		"get_sandbox_exec":    {"sandboxId": sbID, "execId": sbExec, "waitSeconds": 20},
+		"cancel_sandbox_exec": {"sandboxId": sbID, "execId": sbExec},
+		"read_sandbox_file":   {"sandboxId": sbID, "path": "/workspace/a.txt"},
+		"write_sandbox_file":  {"sandboxId": sbID, "path": "/workspace/a.txt", "content": "hello"},
+		"list_sandbox_files":  {"sandboxId": sbID, "path": "/workspace"},
 	}
 	want := map[string][3]string{
-		"list_sandboxes":     {"GET", "/sandbox/sandboxes", "includeDestroyed=true&projectId=" + sbProject},
-		"get_sandbox":        {"GET", "/sandbox/sandboxes/" + sbID, ""},
-		"create_sandbox":     {"POST", "/sandbox/sandboxes", ""},
-		"start_sandbox":      {"POST", "/sandbox/sandboxes/" + sbID + "/start", ""},
-		"stop_sandbox":       {"POST", "/sandbox/sandboxes/" + sbID + "/stop", ""},
-		"exec_in_sandbox":    {"POST", "/sandbox/sandboxes/" + sbID + "/exec", ""},
-		"read_sandbox_file":  {"GET", "/sandbox/sandboxes/" + sbID + "/files", "format=json&path=%2Fworkspace%2Fa.txt"},
-		"write_sandbox_file": {"PUT", "/sandbox/sandboxes/" + sbID + "/files", "format=json&parents=true&path=%2Fworkspace%2Fa.txt"},
-		"list_sandbox_files": {"GET", "/sandbox/sandboxes/" + sbID + "/files/list", "path=%2Fworkspace"},
+		"list_sandboxes":      {"GET", "/sandbox/sandboxes", "includeDestroyed=true&projectId=" + sbProject},
+		"get_sandbox":         {"GET", "/sandbox/sandboxes/" + sbID, ""},
+		"create_sandbox":      {"POST", "/sandbox/sandboxes", ""},
+		"start_sandbox":       {"POST", "/sandbox/sandboxes/" + sbID + "/start", ""},
+		"stop_sandbox":        {"POST", "/sandbox/sandboxes/" + sbID + "/stop", ""},
+		"exec_in_sandbox":     {"POST", "/sandbox/sandboxes/" + sbID + "/exec", ""},
+		"get_sandbox_exec":    {"GET", "/sandbox/sandboxes/" + sbID + "/exec/" + sbExec, "waitSeconds=20"},
+		"cancel_sandbox_exec": {"POST", "/sandbox/sandboxes/" + sbID + "/exec/" + sbExec + "/cancel", ""},
+		"read_sandbox_file":   {"GET", "/sandbox/sandboxes/" + sbID + "/files", "format=json&path=%2Fworkspace%2Fa.txt"},
+		"write_sandbox_file":  {"PUT", "/sandbox/sandboxes/" + sbID + "/files", "format=json&parents=true&path=%2Fworkspace%2Fa.txt"},
+		"list_sandbox_files":  {"GET", "/sandbox/sandboxes/" + sbID + "/files/list", "path=%2Fworkspace"},
 	}
 	for _, name := range sandboxOpsToolNames {
 		before := len(api.calls())
@@ -496,7 +504,7 @@ func TestSandboxOpsToolsRefuseBadInputBeforeTheNetwork(t *testing.T) {
 		{"create_sandbox", map[string]any{"projectId": sbProject, "name": strings.Repeat("a", 64), "idempotencyKey": "k"}},
 		{"create_sandbox", map[string]any{"projectId": sbProject, "name": "ok", "idempotencyKey": "k", "subscriptionId": "nope"}},
 		{"exec_in_sandbox", map[string]any{"sandboxId": sbID, "command": []string{"a"}, "shell": "b"}},
-		{"exec_in_sandbox", map[string]any{"sandboxId": sbID, "shell": "ls", "timeoutSeconds": 601}},
+		{"exec_in_sandbox", map[string]any{"sandboxId": sbID, "shell": "ls", "timeoutSeconds": 3601}},
 		{"exec_in_sandbox", map[string]any{"sandboxId": sbID, "shell": "ls", "timeoutSeconds": -1}},
 	}
 	for tool, args := range bad {
@@ -610,6 +618,7 @@ func TestSandboxOpsToolsMapTheNewErrorCodes(t *testing.T) {
 		"list_sandboxes": {}, "get_sandbox": {"sandboxId": sbID}, "start_sandbox": {"sandboxId": sbID}, "stop_sandbox": {"sandboxId": sbID},
 		"create_sandbox":  {"projectId": sbProject, "name": "b", "idempotencyKey": "k"},
 		"exec_in_sandbox": {"sandboxId": sbID, "shell": "ls"}, "read_sandbox_file": {"sandboxId": sbID, "path": "/workspace/a"},
+		"get_sandbox_exec": {"sandboxId": sbID, "execId": sbExec}, "cancel_sandbox_exec": {"sandboxId": sbID, "execId": sbExec},
 		"write_sandbox_file": {"sandboxId": sbID, "path": "/workspace/a", "content": "x"}, "list_sandbox_files": {"sandboxId": sbID, "path": "/workspace"},
 	}
 	for _, tool := range sandboxOpsToolNames {
@@ -656,5 +665,67 @@ func TestSandboxOpsToolsRunConcurrently(t *testing.T) {
 	wg.Wait()
 	if len(api.calls()) != 12 {
 		t.Fatalf("calls %d", len(api.calls()))
+	}
+}
+
+func TestSandboxExecAsyncShapesAndErrors(t *testing.T) {
+	session, api := connectSandbox(t, sandboxAll, func(w http.ResponseWriter, r *http.Request, n int) {
+		switch {
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/exec"):
+			w.WriteHeader(202)
+			sbJSON(w, `{"execId":"`+sbExec+`","status":"running","elapsedMs":30000,"stdoutTail":"so far","stderrTail":""}`)
+		case strings.HasSuffix(r.URL.Path, "/cancel"):
+			sbJSON(w, `{"execId":"`+sbExec+`","status":"exited","exitCode":-1,"canceled":true,"stdout":"x"}`)
+		default:
+			sbFailure(w, 410, "sandbox_exec_lost", "The sandbox's agent restarted while that command ran, so the command and its output are gone.")
+		}
+	})
+	res := callTool(t, session, "exec_in_sandbox", map[string]any{"sandboxId": sbID, "shell": "sleep 90", "waitSeconds": 0, "timeoutSeconds": 3600})
+	text := resultText(res)
+	if res.IsError || !strings.Contains(text, sbExec) || !strings.Contains(text, "still running") || !strings.Contains(text, "get_sandbox_exec") {
+		t.Fatalf("a running command returns its execId and says what to do: %s", text)
+	}
+	var body map[string]any
+	_ = json.Unmarshal([]byte(api.calls()[0].body), &body)
+	if body["waitSeconds"] != float64(0) || body["timeoutSeconds"] != float64(3600) {
+		t.Fatalf("body %s", api.calls()[0].body)
+	}
+	res = callTool(t, session, "get_sandbox_exec", map[string]any{"sandboxId": sbID, "execId": sbExec})
+	if !res.IsError || !strings.Contains(resultText(res), "agent restarted") {
+		t.Fatalf("lost: %s", resultText(res))
+	}
+	res = callTool(t, session, "cancel_sandbox_exec", map[string]any{"sandboxId": sbID, "execId": sbExec})
+	if res.IsError || !strings.Contains(resultText(res), `"canceled"`) {
+		t.Fatalf("cancel: %s", resultText(res))
+	}
+	if c := api.calls()[2]; c.method != "POST" || !strings.HasSuffix(c.path, "/exec/"+sbExec+"/cancel") {
+		t.Fatalf("cancel call %+v", c)
+	}
+	for _, args := range []map[string]any{
+		{"sandboxId": sbID, "execId": "short"}, {"sandboxId": sbID, "execId": strings.ToUpper(sbExec)}, {"sandboxId": "x", "execId": sbExec},
+		{"sandboxId": sbID, "execId": sbExec, "waitSeconds": 61}, {"sandboxId": sbID, "execId": sbExec, "waitSeconds": -1},
+	} {
+		if r, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_sandbox_exec", Arguments: args}); err == nil && !r.IsError {
+			t.Errorf("%v must be refused", args)
+		}
+	}
+	for _, w := range []int{-1, 61} {
+		if r, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "exec_in_sandbox", Arguments: map[string]any{"sandboxId": sbID, "shell": "ls", "waitSeconds": w}}); err == nil && !r.IsError {
+			t.Errorf("waitSeconds %d must be refused", w)
+		}
+	}
+	if n := len(api.calls()); n != 3 {
+		t.Fatalf("refused calls reached the API: %d", n)
+	}
+	for _, code := range []struct {
+		status int
+		code   string
+		want   string
+	}{{404, "sandbox_exec_not_found", "No such command"}, {410, "sandbox_exec_expired", "10 minutes"}, {410, "sandbox_exec_killed", "not running"}} {
+		sess, _ := connectSandbox(t, sandboxAll, func(w http.ResponseWriter, _ *http.Request, _ int) { sbFailure(w, code.status, code.code, "") })
+		r := callTool(t, sess, "get_sandbox_exec", map[string]any{"sandboxId": sbID, "execId": sbExec})
+		if !r.IsError || !strings.Contains(resultText(r), code.want) {
+			t.Errorf("%s: %s", code.code, resultText(r))
+		}
 	}
 }

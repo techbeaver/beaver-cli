@@ -64,7 +64,7 @@ func TestToolNamesAreStable(t *testing.T) {
 		"plan_cleanup":       true,
 		"list_sandbox_plans": true, "get_sandbox_usage": true, "quote_sandbox_slots": true, "create_sandbox_checkout_link": true,
 		"list_sandboxes": true, "get_sandbox": true, "create_sandbox": true, "start_sandbox": true, "stop_sandbox": true,
-		"exec_in_sandbox": true, "read_sandbox_file": true, "write_sandbox_file": true, "list_sandbox_files": true,
+		"exec_in_sandbox": true, "get_sandbox_exec": true, "cancel_sandbox_exec": true, "read_sandbox_file": true, "write_sandbox_file": true, "list_sandbox_files": true,
 		"search": true, "fetch": true,
 	}
 	got := map[string]bool{}
@@ -132,7 +132,7 @@ func TestReadOnlyToolsNeverRequireAWriteScope(t *testing.T) {
 		scopes.ProjectsWrite: true, scopes.PaaSWrite: true, scopes.PaaSDeploy: true,
 		scopes.DBaaSWrite: true, scopes.PaaSDestroy: true, scopes.DBaaSDestroy: true,
 		scopes.BillingCheckout: true, scopes.BillingSpend: true,
-		scopes.SandboxWrite: true, scopes.SandboxExec: true, scopes.SandboxDestroy: true,
+		scopes.SandboxWrite: true, scopes.SandboxDestroy: true,
 	}
 	for _, spec := range allSpecs(t) {
 		if !spec.ReadOnly {

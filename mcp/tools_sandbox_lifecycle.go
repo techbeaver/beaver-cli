@@ -168,16 +168,17 @@ func registerSandboxExecTools(r *Registry) {
 		Scopes: []string{scopes.SandboxExec},
 		// A command can change or delete anything in the sandbox, so a client should ask before it runs.
 		Destructive: true,
-		Description: "Runs one command in a RUNNING sandbox and waits for it. Give command as a list of arguments (run directly, safest) or shell as one string (run with a shell, so pipes and redirects work). It returns item.exitCode, item.stdout, item.stderr, item.stdoutTruncated, item.stderrTruncated, item.timedOut and item.durationMs. " +
-			"Output is capped per stream and flagged when cut. At the timeout the whole process tree is killed and timedOut is true. Do not start long lived servers in the foreground: run them in the background with output redirected. " + untrustedNote + " Calls are rate limited and capped per sandbox; a 429 says to wait.",
+		Description: "Runs one command in a RUNNING sandbox and waits for it up to waitSeconds (default 30, at most 60). A command that ends in that window returns item.status exited with the result in one call. A longer one returns item.status running with item.execId and the last bytes of its output: call get_sandbox_exec with that execId (it can wait up to 60 s per call) until it is exited, or cancel_sandbox_exec to kill it. The command keeps running in the sandbox meanwhile, up to timeoutSeconds. Give command as a list of arguments (run directly, safest) or shell as one string (run with a shell, so pipes and redirects work). A finished result has item.exitCode, item.stdout, item.stderr, item.stdoutTruncated, item.stderrTruncated, item.timedOut and item.durationMs. " +
+			"Output is capped per stream and flagged when cut. At the timeout the whole process tree is killed and timedOut is true. Do not start long lived servers in the foreground: run them in the background with output redirected, or the command holds a slot until the timeout. " + untrustedNote + " Calls are rate limited and capped per sandbox; a 429 says to wait.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
 		SandboxID      string            `json:"sandboxId" jsonschema:"the sandbox's id, from list_sandboxes; it must be running"`
 		Command        []string          `json:"command,omitempty" jsonschema:"the program and its arguments, one entry each; use this or shell"`
 		Shell          string            `json:"shell,omitempty" jsonschema:"one command line run with /bin/sh -c; use this or command"`
 		Cwd            string            `json:"cwd,omitempty" jsonschema:"absolute working directory inside /workspace; default /workspace"`
 		Env            map[string]string `json:"env,omitempty" jsonschema:"extra environment variables, names like PATH_EXTRA"`
-		TimeoutSeconds int               `json:"timeoutSeconds,omitempty" jsonschema:"1 to 600, default 60"`
+		TimeoutSeconds int               `json:"timeoutSeconds,omitempty" jsonschema:"1 to 3600 seconds, default 120"`
 		Stdin          string            `json:"stdin,omitempty" jsonschema:"text written to the command's standard input, at most 1 MiB"`
+		WaitSeconds    *int              `json:"waitSeconds,omitempty" jsonschema:"how long this call waits for the command, 0 to 60, default 30; a longer command returns an execId to poll"`
 	}) (*ObjectResult, error) {
 		id, err := sandboxIDArg(in.SandboxID)
 		if err != nil {
@@ -188,6 +189,9 @@ func registerSandboxExecTools(r *Registry) {
 		}
 		if in.TimeoutSeconds != 0 && (in.TimeoutSeconds < sandboxrules.ExecMinTimeoutSec || in.TimeoutSeconds > sandboxrules.ExecMaxTimeoutSec) {
 			return nil, fmt.Errorf("%s", sandboxrules.ExecTimeoutRule)
+		}
+		if in.WaitSeconds != nil && (*in.WaitSeconds < 0 || *in.WaitSeconds > sandboxrules.ExecMaxWaitSeconds) {
+			return nil, fmt.Errorf("waitSeconds is between 0 and %d", sandboxrules.ExecMaxWaitSeconds)
 		}
 		if len(in.Stdin) > sandboxrules.ExecMaxStdinBytes {
 			return nil, fmt.Errorf("stdin is limited to 1 MiB")
@@ -209,17 +213,64 @@ func registerSandboxExecTools(r *Registry) {
 		if in.Stdin != "" {
 			body["stdin"] = in.Stdin
 		}
-		wait := 60 * time.Second
-		if in.TimeoutSeconds > 0 {
-			wait = time.Duration(in.TimeoutSeconds) * time.Second
+		if in.WaitSeconds != nil {
+			body["waitSeconds"] = *in.WaitSeconds
 		}
 		long := *deps
-		long.Client = deps.Client.WithTimeout(wait + 30*time.Second)
+		long.Client = deps.Client.WithTimeout(90 * time.Second)
 		item, err := sandboxSend(ctx, &long, call, http.MethodPost, "/sandbox/sandboxes/"+id+"/exec", body, nil)
 		if err != nil {
 			return nil, err
 		}
-		return &ObjectResult{Summary: "The command finished. Its exit code and output are in item. " + untrustedNote, Item: item}, nil
+		return &ObjectResult{Summary: execSummary(item), Item: item}, nil
+	})
+
+	register(r, toolSpec{
+		Name:     "get_sandbox_exec",
+		Title:    "Check or wait for a sandbox command",
+		Scopes:   []string{scopes.SandboxExec},
+		ReadOnly: true, Idempotent: true,
+		Description: "Returns the state of a command that exec_in_sandbox left running: item.status running with the last bytes of its output, or exited with item.exitCode, item.stdout and item.stderr. waitSeconds (0 to 60, default 0) makes the call wait for it to end, so one call replaces many polls. Results are kept for 10 minutes after the command ends. Error codes: sandbox_exec_expired (dropped after 10 minutes), sandbox_exec_lost (the sandbox's agent restarted, the command is gone), sandbox_exec_killed (the sandbox stopped), sandbox_exec_not_found. " + untrustedNote,
+	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
+		SandboxID   string `json:"sandboxId" jsonschema:"the sandbox's id, from list_sandboxes"`
+		ExecID      string `json:"execId" jsonschema:"the execId exec_in_sandbox returned for a command that was still running"`
+		WaitSeconds int    `json:"waitSeconds,omitempty" jsonschema:"how long to wait for the command to end, 0 to 60, default 0"`
+	}) (*ObjectResult, error) {
+		p, err := execToolPath(in.SandboxID, in.ExecID)
+		if err != nil {
+			return nil, err
+		}
+		if in.WaitSeconds < 0 || in.WaitSeconds > sandboxrules.ExecMaxWaitSeconds {
+			return nil, fmt.Errorf("waitSeconds is between 0 and %d", sandboxrules.ExecMaxWaitSeconds)
+		}
+		long := *deps
+		long.Client = deps.Client.WithTimeout(90 * time.Second)
+		item, err := sandboxGet(ctx, &long, call, p, url.Values{"waitSeconds": {fmt.Sprint(in.WaitSeconds)}})
+		if err != nil {
+			return nil, err
+		}
+		return &ObjectResult{Summary: execSummary(item), Item: item}, nil
+	})
+
+	register(r, toolSpec{
+		Name:        "cancel_sandbox_exec",
+		Title:       "Kill a sandbox command",
+		Scopes:      []string{scopes.SandboxExec},
+		Idempotent:  true,
+		Description: "Kills the whole process tree of a command exec_in_sandbox left running and returns what it printed so far (item.canceled true). It deletes no files. Cancelling a command that is already over just returns its result. " + untrustedNote,
+	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
+		SandboxID string `json:"sandboxId" jsonschema:"the sandbox's id, from list_sandboxes"`
+		ExecID    string `json:"execId" jsonschema:"the execId exec_in_sandbox returned for a command that was still running"`
+	}) (*ObjectResult, error) {
+		p, err := execToolPath(in.SandboxID, in.ExecID)
+		if err != nil {
+			return nil, err
+		}
+		item, err := sandboxSend(ctx, deps, call, http.MethodPost, p+"/cancel", nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		return &ObjectResult{Summary: "The command was ended. What it printed is in item. " + untrustedNote, Item: item}, nil
 	})
 
 	register(r, toolSpec{
@@ -299,4 +350,23 @@ func registerSandboxExecTools(r *Registry) {
 		}
 		return &ListResult{Summary: sum, Count: len(items), Items: items}, nil
 	})
+}
+
+// execSummary says in words whether the command is over, without repeating anything it printed.
+func execSummary(item map[string]any) string {
+	if item["status"] == "running" {
+		return "The command is still running. Call get_sandbox_exec with item.execId to wait for it, or cancel_sandbox_exec to kill it. item.stdoutTail and item.stderrTail are the last bytes it wrote. " + untrustedNote
+	}
+	return "The command finished. Its exit code and output are in item. " + untrustedNote
+}
+
+func execToolPath(rawSandbox, execID string) (string, error) {
+	id, err := sandboxIDArg(rawSandbox)
+	if err != nil {
+		return "", err
+	}
+	if len(execID) != 40 || strings.Trim(execID, "0123456789abcdef") != "" {
+		return "", fmt.Errorf("execId is the 40 character id exec_in_sandbox returned")
+	}
+	return "/sandbox/sandboxes/" + id + "/exec/" + execID, nil
 }
