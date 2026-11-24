@@ -61,8 +61,9 @@ func TestToolNamesAreStable(t *testing.T) {
 		"pay_invoice": true, "create_checkout_link": true, "get_prepaid_balance": true, "create_topup_link": true,
 		"delete_app": true, "delete_database": true, "delete_logical_database": true, "delete_project": true,
 		"remove_custom_domain": true, "restore_database": true, "get_restore_preview": true,
-		"plan_cleanup": true,
-		"search":       true, "fetch": true,
+		"plan_cleanup":       true,
+		"list_sandbox_plans": true, "get_sandbox_usage": true, "quote_sandbox_slots": true, "create_sandbox_checkout_link": true,
+		"search": true, "fetch": true,
 	}
 	got := map[string]bool{}
 	for _, spec := range allSpecs(t) {
