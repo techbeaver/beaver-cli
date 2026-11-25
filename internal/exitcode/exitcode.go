@@ -35,9 +35,21 @@ var ErrUnauthenticated = errors.New("not authenticated")
 // person has to approve it. It is a retryable state, not a failure.
 var ErrAwaitingApproval = errors.New("awaiting approval")
 
+// RemoteExit carries the exit code of a command that ran elsewhere. An empty Msg means the
+// command already said everything it had to and nothing more is printed.
+type RemoteExit struct {
+	Code int
+	Msg  string
+}
+
+func (e *RemoteExit) Error() string { return e.Msg }
+
 // From maps an error to its exit code.
 func From(err error) int {
+	var remote *RemoteExit
 	switch {
+	case errors.As(err, &remote):
+		return remote.Code
 	case err == nil:
 		return OK
 	case errors.Is(err, ErrUsage):

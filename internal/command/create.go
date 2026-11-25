@@ -33,6 +33,12 @@ func addIdempotencyKeyFlag(cmd *cobra.Command, key *string) {
 
 // sendCharge sends a request that can create a charge, retrying transient failures under one key.
 func sendCharge(ctx context.Context, env *Env, s *Session, req client.Request, key string) (*client.Envelope, error) {
+	return sendKeyed(ctx, env, s, req, key, "a second charge", nil)
+}
+
+// sendKeyed is sendCharge for any call that must not happen twice. risk completes the sentence
+// "without risking ..."; noRetry names answers that must come straight back, such as a 429 the caller handles.
+func sendKeyed(ctx context.Context, env *Env, s *Session, req client.Request, key, risk string, noRetry func(*client.APIError) bool) (*client.Envelope, error) {
 	if key == "" {
 		generated, err := newIdempotencyKey()
 		if err != nil {
@@ -56,6 +62,10 @@ func sendCharge(ctx context.Context, env *Env, s *Session, req client.Request, k
 		if !ambiguousOutcome(ctx, err) {
 			return nil, err
 		}
+		var apiErr *client.APIError
+		if noRetry != nil && errors.As(err, &apiErr) && noRetry(apiErr) {
+			return nil, err
+		}
 		if attempt >= chargeAttempts {
 			break
 		}
@@ -64,7 +74,7 @@ func sendCharge(ctx context.Context, env *Env, s *Session, req client.Request, k
 			break
 		}
 	}
-	return nil, fmt.Errorf("%w\nIt may or may not have gone through. To retry without risking a second charge, run the same command with --idempotency-key %s", last, key)
+	return nil, fmt.Errorf("%w\nIt may or may not have gone through. To retry without risking %s, run the same command with --idempotency-key %s", last, risk, key)
 }
 
 // ambiguousOutcome reports whether the request may have been applied and is safe to repeat under its key.

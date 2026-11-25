@@ -114,3 +114,34 @@ func TestNoDefaultScopeIsOutsideTheKnownVocabulary(t *testing.T) {
 		}
 	}
 }
+
+func TestSandboxScopesAreKnownIssuableAndNeverDefaulted(t *testing.T) {
+	for _, s := range []string{SandboxRead, SandboxWrite, SandboxFiles, SandboxExec, SandboxDestroy} {
+		if !IsKnown(s) || !Issuable(s) || Has(Default, s) {
+			t.Errorf("%s: known=%v issuable=%v inDefault=%v", s, IsKnown(s), Issuable(s), Has(Default, s))
+		}
+	}
+	if !IsDestructive(SandboxDestroy) || IsDestructive(SandboxWrite) {
+		t.Error("only sandbox:destroy is destructive")
+	}
+	if !IsSensitive(SandboxExec) || !IsSensitive(SandboxFiles) || IsSensitive(SandboxRead) {
+		t.Error("exec and files reach inside the machine, read does not")
+	}
+}
+
+func TestExecImpliesFilesAndNothingElseDoes(t *testing.T) {
+	if !Has([]string{SandboxExec}, SandboxFiles) || !HasAll([]string{SandboxExec}, []string{SandboxFiles}) {
+		t.Fatal("sandbox:exec must satisfy sandbox:files")
+	}
+	if Has([]string{SandboxFiles}, SandboxExec) {
+		t.Fatal("files must not imply exec")
+	}
+	for _, s := range []string{SandboxRead, SandboxWrite, SandboxDestroy} {
+		if Has([]string{SandboxExec}, s) {
+			t.Fatalf("exec must not imply %s", s)
+		}
+	}
+	if got := Missing([]string{SandboxExec}, []string{SandboxFiles, SandboxWrite}); len(got) != 1 || got[0] != SandboxWrite {
+		t.Fatalf("missing %v", got)
+	}
+}

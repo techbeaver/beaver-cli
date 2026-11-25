@@ -26,6 +26,13 @@ const (
 	DBaaSWrite   = "dbaas:write"
 	DBaaSDestroy = "dbaas:destroy"
 
+	// Sandboxes. None is in Default. SandboxExec also satisfies SandboxFiles.
+	SandboxRead    = "sandbox:read"
+	SandboxWrite   = "sandbox:write"
+	SandboxFiles   = "sandbox:files"
+	SandboxExec    = "sandbox:exec"
+	SandboxDestroy = "sandbox:destroy"
+
 	LogsRead = "logs:read"
 
 	BillingRead     = "billing:read"
@@ -45,6 +52,7 @@ var All = []string{
 	ProjectsRead, ProjectsWrite,
 	PaaSRead, PaaSWrite, PaaSDeploy, PaaSDestroy,
 	DBaaSRead, DBaaSWrite, DBaaSDestroy,
+	SandboxRead, SandboxWrite, SandboxFiles, SandboxExec, SandboxDestroy,
 	LogsRead,
 	BillingRead, BillingCheckout, BillingSpend,
 	SecretsRead,
@@ -61,8 +69,20 @@ var Default = []string{
 }
 
 var destructive = map[string]bool{
-	PaaSDestroy:  true,
-	DBaaSDestroy: true,
+	PaaSDestroy:    true,
+	DBaaSDestroy:   true,
+	SandboxDestroy: true,
+}
+
+var sensitive = map[string]bool{
+	SecretsRead:  true,
+	SandboxExec:  true,
+	SandboxFiles: true,
+}
+
+// implies lists what a scope also grants: a command can do anything a file call can.
+var implies = map[string][]string{
+	SandboxExec: {SandboxFiles},
 }
 
 var notIssuable = map[string]bool{
@@ -79,6 +99,11 @@ var descriptions = map[string]string{
 	DBaaSRead:       "See your managed databases, their settings and their usage",
 	DBaaSWrite:      "Create managed databases, databases inside them, roles and backups",
 	DBaaSDestroy:    "Delete managed databases and restore over their data. Every deletion still needs you to approve it in your browser",
+	SandboxRead:     "See your sandboxes and their status. Nothing inside them",
+	SandboxWrite:    "Create sandboxes and start or stop them. Running one uses the slots and balance you already have; this cannot buy anything",
+	SandboxFiles:    "Read and write any file inside your sandboxes",
+	SandboxExec:     "Run any command inside your sandboxes. A command can also read and write any file there, so this includes file access",
+	SandboxDestroy:  "Delete sandboxes and everything on their disk. Every deletion still needs you to approve it in your browser",
 	LogsRead:        "Read your build and runtime logs",
 	BillingRead:     "See your invoices, credit balance and what a purchase would cost",
 	BillingCheckout: "Prepare a payment. It cannot complete one: only you can, on the payment page",
@@ -100,6 +125,9 @@ func IsKnown(scope string) bool {
 	_, ok := descriptions[scope]
 	return ok
 }
+
+// IsSensitive reports whether granting this scope exposes the contents of your machines or secrets.
+func IsSensitive(scope string) bool { return sensitive[scope] }
 
 // IsDestructive reports whether granting this scope permits destroying
 // something. Consent screens must present these separately.
@@ -169,6 +197,11 @@ func Has(granted []string, want string) bool {
 	for _, g := range granted {
 		if g == want {
 			return true
+		}
+		for _, also := range implies[g] {
+			if also == want {
+				return true
+			}
 		}
 	}
 	return false

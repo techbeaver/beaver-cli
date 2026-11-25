@@ -1,8 +1,11 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -173,5 +176,80 @@ func TestTailReturnsOnlyDataLinesAndBoundsThem(t *testing.T) {
 		if l != "line" {
 			t.Fatalf("a non-data line leaked through: %q", l)
 		}
+	}
+}
+
+func TestOpenStreamsABodyAndReadsAnErrorEnvelope(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("fail") != "" {
+			w.Header().Set("Retry-After", "7")
+			w.WriteHeader(429)
+			_, _ = w.Write([]byte(`{"success":false,"message":"slow","code":"sandbox_busy"}`))
+			return
+		}
+		_, _ = w.Write([]byte("raw bytes"))
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "t")
+	resp, err := c.Open(context.Background(), "btk_x", Request{Method: http.MethodGet, Path: "/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(b) != "raw bytes" {
+		t.Fatalf("body %q", b)
+	}
+	_, err = c.Open(context.Background(), "btk_x", Request{Method: http.MethodGet, Path: "/x", Query: map[string][]string{"fail": {"1"}}})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "sandbox_busy" || apiErr.RetryAfter != 7*time.Second {
+		t.Fatalf("got %#v", err)
+	}
+}
+
+func TestRawBodyIsSentAsOctetStreamAndRetryAfterIsParsedOnDo(t *testing.T) {
+	var gotType string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotType = r.Header.Get("Content-Type")
+		gotBody, _ = io.ReadAll(r.Body)
+		switch r.URL.Query().Get("h") {
+		case "bad":
+			w.Header().Set("Retry-After", "Wed, 21 Oct 2026 07:28:00 GMT")
+		case "neg":
+			w.Header().Set("Retry-After", "-4")
+		default:
+			w.Header().Set("Retry-After", "3")
+		}
+		w.WriteHeader(429)
+		_, _ = w.Write([]byte(`{"success":false,"message":"slow"}`))
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "t")
+	_, err := c.Do(context.Background(), "btk_x", Request{Method: http.MethodPut, Path: "/x", RawBody: []byte{0, 1, 2}})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.RetryAfter != 3*time.Second {
+		t.Fatalf("got %#v", err)
+	}
+	if gotType != "application/octet-stream" || !bytes.Equal(gotBody, []byte{0, 1, 2}) {
+		t.Fatalf("type %q body %v", gotType, gotBody)
+	}
+	_, _ = c.Do(context.Background(), "btk_x", Request{Method: http.MethodPut, Path: "/x", RawBody: []byte{}})
+	if gotType != "application/octet-stream" || len(gotBody) != 0 {
+		t.Fatalf("an empty raw body is still raw: %q", gotType)
+	}
+	for _, h := range []string{"bad", "neg"} {
+		_, err = c.Do(context.Background(), "btk_x", Request{Method: http.MethodGet, Path: "/x", Query: map[string][]string{"h": {h}}})
+		if !errors.As(err, &apiErr) || apiErr.RetryAfter != 0 {
+			t.Fatalf("%s: a Retry-After that is not whole seconds is ignored, got %v", h, apiErr.RetryAfter)
+		}
+	}
+}
+
+func TestWithTimeoutDoesNotChangeTheOriginal(t *testing.T) {
+	c := New("http://example.invalid", "t")
+	long := c.WithTimeout(5 * time.Minute)
+	if long.HTTP.Timeout != 5*time.Minute || c.HTTP.Timeout != 60*time.Second || long == c {
+		t.Fatalf("original %v, copy %v", c.HTTP.Timeout, long.HTTP.Timeout)
 	}
 }

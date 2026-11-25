@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -81,6 +82,8 @@ type Request struct {
 	Query   url.Values
 	Body    any
 	Headers map[string]string
+	// RawBody, when non-nil, is sent as application/octet-stream instead of Body.
+	RawBody []byte
 }
 
 func (c *Client) endpoint(req Request) string {
@@ -98,18 +101,31 @@ func (c *Client) userAgent() string {
 	return c.UserAgent
 }
 
-// Do performs a call as the customer whose token this is.
-func (c *Client) Do(ctx context.Context, token string, req Request) (*Envelope, error) {
+// WithTimeout returns a copy of the client whose requests give up after d.
+func (c *Client) WithTimeout(d time.Duration) *Client {
+	return &Client{
+		BaseURL:   c.BaseURL,
+		UserAgent: c.UserAgent,
+		Debug:     c.Debug,
+		HTTP:      &http.Client{Timeout: d, CheckRedirect: endpoint.CheckRedirect},
+	}
+}
+
+func (c *Client) build(ctx context.Context, token string, req Request, accept string) (*http.Request, error) {
 	if err := checkPath(req.Path); err != nil {
 		return nil, fmt.Errorf("%w: %q", err, req.Path)
 	}
 	var body io.Reader
-	if req.Body != nil {
+	contentType := ""
+	switch {
+	case req.RawBody != nil:
+		body, contentType = bytes.NewReader(req.RawBody), "application/octet-stream"
+	case req.Body != nil:
 		encoded, err := json.Marshal(req.Body)
 		if err != nil {
 			return nil, fmt.Errorf("encoding request: %w", err)
 		}
-		body = bytes.NewReader(encoded)
+		body, contentType = bytes.NewReader(encoded), "application/json"
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, req.Method, c.endpoint(req), body)
@@ -117,9 +133,9 @@ func (c *Client) Do(ctx context.Context, token string, req Request) (*Envelope, 
 		return nil, fmt.Errorf("building request: %w", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpReq.Header.Set("Accept", "application/json")
-	if req.Body != nil {
-		httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", accept)
+	if contentType != "" {
+		httpReq.Header.Set("Content-Type", contentType)
 	}
 	httpReq.Header.Set("User-Agent", c.userAgent())
 	if ip := CallerIPFrom(ctx); ip != "" {
@@ -129,6 +145,59 @@ func (c *Client) Do(ctx context.Context, token string, req Request) (*Envelope, 
 		if v != "" {
 			httpReq.Header.Set(k, v)
 		}
+	}
+	return httpReq, nil
+}
+
+// Open performs a call and returns the response with its body unread, so a large body can be
+// streamed. The caller closes it. A non-2xx answer is read and returned as an error.
+func (c *Client) Open(ctx context.Context, token string, req Request) (*http.Response, error) {
+	httpReq, err := c.build(ctx, token, req, "*/*")
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.HTTP.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("calling the TechBeaver API: %w", err)
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return resp, nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return nil, errorFromResponse(resp)
+}
+
+func errorFromResponse(resp *http.Response) *APIError {
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	var env Envelope
+	if json.Unmarshal(raw, &env) != nil {
+		return &APIError{
+			StatusCode: resp.StatusCode,
+			Code:       "upstream_not_json",
+			Message: fmt.Sprintf("The TechBeaver API returned a %d that was not JSON. Something between you and the API answered instead.",
+				resp.StatusCode),
+			RetryAfter: retryAfter(resp),
+		}
+	}
+	apiErr := envelopeError(resp.StatusCode, &env)
+	apiErr.RetryAfter = retryAfter(resp)
+	return apiErr
+}
+
+// retryAfter reads a Retry-After given in whole seconds.
+func retryAfter(resp *http.Response) time.Duration {
+	secs, err := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After")))
+	if err != nil || secs < 0 {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// Do performs a call as the customer whose token this is.
+func (c *Client) Do(ctx context.Context, token string, req Request) (*Envelope, error) {
+	httpReq, err := c.build(ctx, token, req, "application/json")
+	if err != nil {
+		return nil, err
 	}
 
 	started := time.Now()
@@ -151,11 +220,14 @@ func (c *Client) Do(ctx context.Context, token string, req Request) (*Envelope, 
 			Code:       "upstream_not_json",
 			Message: fmt.Sprintf("The TechBeaver API returned a %d that was not JSON. Something between you and the API answered instead.",
 				resp.StatusCode),
+			RetryAfter: retryAfter(resp),
 		}
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, envelopeError(resp.StatusCode, &env)
+		apiErr := envelopeError(resp.StatusCode, &env)
+		apiErr.RetryAfter = retryAfter(resp)
+		return nil, apiErr
 	}
 	return &env, nil
 }

@@ -62,8 +62,12 @@ func TestToolNamesAreStable(t *testing.T) {
 		"create_wallet_topup_link": true, "list_server_plans": true, "quote_server_order": true, "order_server": true,
 		"delete_app": true, "delete_database": true, "delete_logical_database": true, "delete_project": true,
 		"remove_custom_domain": true, "restore_database": true, "get_restore_preview": true,
-		"plan_cleanup": true,
-		"search":       true, "fetch": true,
+		"plan_cleanup":       true,
+		"list_sandbox_plans": true, "get_sandbox_usage": true, "quote_sandbox_slots": true, "create_sandbox_checkout_link": true,
+		"list_sandbox_statements": true, "get_current_sandbox_statements": true, "get_sandbox_statement": true,
+		"list_sandboxes": true, "get_sandbox": true, "create_sandbox": true, "start_sandbox": true, "stop_sandbox": true,
+		"exec_in_sandbox": true, "get_sandbox_exec": true, "cancel_sandbox_exec": true, "read_sandbox_file": true, "write_sandbox_file": true, "list_sandbox_files": true,
+		"search": true, "fetch": true,
 	}
 	got := map[string]bool{}
 	for _, spec := range allSpecs(t) {
@@ -107,7 +111,9 @@ func TestDestructiveToolsRequireADestroyScope(t *testing.T) {
 			t.Errorf("tool %q is marked both read-only and destructive", spec.Name)
 		}
 		// Annotated destructive so clients prompt; both are reversible (ADR 0017).
-		reversible := map[string]bool{"stop_app": true, "disable_db_extension": true}
+		reversible := map[string]bool{"stop_app": true, "disable_db_extension": true,
+			// Flagged so a client asks first. Neither deletes a sandbox: destroying one is not an MCP tool here.
+			"exec_in_sandbox": true, "write_sandbox_file": true}
 		if reversible[spec.Name] {
 			continue
 		}
@@ -128,6 +134,7 @@ func TestReadOnlyToolsNeverRequireAWriteScope(t *testing.T) {
 		scopes.ProjectsWrite: true, scopes.PaaSWrite: true, scopes.PaaSDeploy: true,
 		scopes.DBaaSWrite: true, scopes.PaaSDestroy: true, scopes.DBaaSDestroy: true,
 		scopes.BillingCheckout: true, scopes.BillingSpend: true,
+		scopes.SandboxWrite: true, scopes.SandboxDestroy: true,
 	}
 	for _, spec := range allSpecs(t) {
 		if !spec.ReadOnly {

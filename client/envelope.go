@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Envelope is the response shape every endpoint on this platform returns.
@@ -24,6 +25,8 @@ type APIError struct {
 	Code       string
 	Message    string
 	Data       map[string]any
+	// RetryAfter is the server's Retry-After, zero when absent.
+	RetryAfter time.Duration
 }
 
 func (e *APIError) Error() string {

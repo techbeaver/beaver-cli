@@ -57,6 +57,70 @@ beaver apps rollback --revision REVISION   # put a named earlier revision back, 
 beaver --debug apps list                   # one stderr line per request, never credentials or bodies
 ```
 
+## Sandboxes
+
+Sandboxes need scopes that the default sign in does not include. Tick them in the agent connection's
+permissions, or sign in with them:
+
+```sh
+beaver auth login --scope sandbox:read,sandbox:write,sandbox:files,sandbox:exec,sandbox:destroy,billing:read,billing:checkout,projects:read
+```
+
+`sandbox:exec` also covers files. Sandbox commands take the project id (not its name): `--project ID`.
+
+```sh
+beaver sandbox plans                                  # plans and prices, read live
+beaver sandbox quote --plan PLAN_ID --slots 2         # what it costs your account
+beaver sandbox buy --plan PLAN_ID --slots 2           # prints a payment link; beaver cannot pay
+beaver sandbox usage                                  # balance, hourly burn, hours remaining
+beaver sandbox subscriptions                          # slots bought and in use, and whether auto-renew or the card top-up is on
+beaver sandbox statements list                        # monthly statements of by-the-hour use, newest first
+beaver sandbox statements current                     # the month so far, with line items
+beaver sandbox statements show STATEMENT_ID
+beaver sandbox add-slots quote SUBSCRIPTION_ID --slots 1
+
+beaver sandbox create "my box"                        # uses a free slot, sends an Idempotency-Key
+beaver sandbox list | get ID | start ID | stop ID
+beaver sandbox destroy ID                             # needs your approval in a browser, like apps and databases
+
+beaver sandbox exec ID -- python3 -c 'print(1)'       # stdout, stderr and the exit status are the command's own
+beaver sandbox exec ID --sh 'make test | tail' --timeout 5m --cwd /workspace/app --env CI=1
+echo data | beaver sandbox exec ID -- wc -c           # stdin is sent when it is a pipe (--no-stdin to skip)
+beaver sandbox cp ./app.tar ID:/workspace/app.tar     # uploads in 3 MiB chunks
+beaver sandbox cp ID:/workspace/out.log ./out.log     # streamed; --force to replace a local file
+beaver sandbox ls ID:/workspace
+beaver sandbox mkdir ID:/workspace/new
+```
+
+`exec` exits with the remote command's status. It waits 30 seconds, then polls (each call at most 60
+seconds, so nothing outlasts the edge) and prints the command's own output once, at the end. A command
+may run up to `--timeout` (1 second to 1 hour, default 2 minutes); past it, it is killed and `beaver`
+exits 124. Ctrl-C cancels the command and exits 130, and a second Ctrl-C leaves at once. Output beyond
+4 MiB per stream is cut and a warning is printed on stderr. `--json` prints the whole result.
+
+```sh
+beaver sandbox exec ID --detach -- ./long-job.sh     # prints the exec id and returns
+beaver sandbox exec-status ID EXEC_ID --wait 60      # running with its last output, or the result
+beaver sandbox exec-cancel ID EXEC_ID
+```
+
+Results are kept for 10 minutes after a command ends.
+
+A statement is a summary of charges that were already invoiced and settled, never an invoice, and the
+statements commands only read (`billing:read`). An open statement lists the windows settled so far, not
+the hours still running: `beaver sandbox usage` has that estimate.
+
+By the hour: creating or starting a sandbox on a by-the-hour subscription spends your balance, which needs
+`billing:spend`. No sign in or agent connection can be granted it, so beaver is refused with
+`billing_spend_required` and nothing is created or charged. A monthly slot needs only `sandbox:write`.
+`beaver sandbox subscriptions` shows which kind each subscription is.
+
+Not available to the CLI, because the platform keeps those routes closed to tokens: remote file
+delete, subscription changes other than the add-slots quote (reduce, cancel, resume), turning
+auto-renew or the by-the-hour card top-up on or off (use the portal), by-the-hour activation and events.
+`buy` only returns a payment link: paying from a balance is not offered. When a dollar wallet is short,
+the link is a wallet top-up page, and the purchase is paid from the wallet by itself once it lands.
+
 Pin a project and application once, and the commands in that directory get shorter:
 
 ```toml
@@ -121,6 +185,10 @@ What the client can reach is decided by whoever starts the server, never by the 
 - `beaver mcp --allow-secrets` also offers the tools that put secret values (environment variables,
   database passwords) into the conversation. They are off by default, and need a credential granted
   `secrets:read`.
+
+Sandboxes are covered by tools for plans, usage, monthly statements (`list_sandbox_statements`,
+`get_current_sandbox_statements`, `get_sandbox_statement`), buying, lifecycle, commands and files.
+Destroying a sandbox is not a tool: use `beaver sandbox destroy`.
 
 Servers and the dollar wallet are covered too, by `list_server_plans`, `quote_server_order`,
 `order_server` and `create_wallet_topup_link`. An agent can never pay. A naira server order returns a
