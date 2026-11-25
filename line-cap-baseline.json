@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "limits": {
+    "source": 500,
+    "test": 1000,
+    "style": 1000
+  },
+  "allowed": {
+    "internal/command/apps.go": 837,
+    "internal/command/hardening_test.go": 1298,
+    "mcp/integration_test.go": 1157,
+    "mcp/tools_paas.go": 509
+  },
+  "exceptions": []
+}

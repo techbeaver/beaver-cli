@@ -16,6 +16,8 @@ func AllTools() *Registry {
 	registerObservationTools(r)
 	registerBillingTools(r)
 	registerSandboxTools(r)
+	registerWalletTools(r)
+	registerServerTools(r)
 	registerDestructiveTools(r)
 	registerCleanupTool(r)
 	registerSearchTools(r)

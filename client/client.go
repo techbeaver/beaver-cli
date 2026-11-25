@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/techbeaver/beaver-cli/internal/endpoint"
@@ -35,6 +36,10 @@ type Client struct {
 	BaseURL   string
 	HTTP      *http.Client
 	UserAgent string
+	// Debug, when set, receives one line per request: method, path, status,
+	// duration and request id. Never a credential, query value or body.
+	Debug   io.Writer
+	debugMu sync.Mutex
 }
 
 // New builds a client for the API at baseURL. userAgent identifies the caller
@@ -98,9 +103,12 @@ func (c *Client) userAgent() string {
 
 // WithTimeout returns a copy of the client whose requests give up after d.
 func (c *Client) WithTimeout(d time.Duration) *Client {
-	clone := *c
-	clone.HTTP = &http.Client{Timeout: d, CheckRedirect: endpoint.CheckRedirect}
-	return &clone
+	return &Client{
+		BaseURL:   c.BaseURL,
+		UserAgent: c.UserAgent,
+		Debug:     c.Debug,
+		HTTP:      &http.Client{Timeout: d, CheckRedirect: endpoint.CheckRedirect},
+	}
 }
 
 func (c *Client) build(ctx context.Context, token string, req Request, accept string) (*http.Request, error) {
@@ -192,7 +200,9 @@ func (c *Client) Do(ctx context.Context, token string, req Request) (*Envelope, 
 		return nil, err
 	}
 
+	started := time.Now()
 	resp, err := c.HTTP.Do(httpReq)
+	c.logCall(req.Method, req.Path, resp, started, err)
 	if err != nil {
 		return nil, fmt.Errorf("calling the TechBeaver API: %w", err)
 	}
@@ -311,7 +321,9 @@ func (c *Client) openStream(ctx context.Context, token string, req Request, time
 	}
 
 	streamer := &http.Client{Timeout: timeout, CheckRedirect: endpoint.CheckRedirect}
+	started := time.Now()
 	resp, err := streamer.Do(httpReq)
+	c.logCall(http.MethodGet, req.Path, resp, started, err)
 	if err != nil {
 		return nil, fmt.Errorf("reading the log stream: %w", err)
 	}

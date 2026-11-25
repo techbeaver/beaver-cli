@@ -6,7 +6,23 @@
 go build ./... && go test -race ./... && go vet ./...
 golangci-lint run
 ./scripts/check-no-secrets.sh
+node scripts/line-cap.mjs
 ```
+
+## File length
+
+A new Go file must be 500 lines or fewer, and a new test file 1000 or fewer. The four files
+that were over a cap on 2026-11-23 are recorded in `line-cap-baseline.json` at their length
+that day. They may shrink and may never grow.
+
+When the check fails, put the new code in a new file in the same package. Do not edit
+`line-cap-baseline.json` to get a pass: CI compares it with the commit before and fails on
+any number that went up. A raise needs a maintainer's explicit yes and an entry under
+`exceptions` with `key`, `to`, `reason`, `approved_by` and `date`.
+
+After shortening a recorded file, run `node scripts/line-cap.mjs --update` and commit the
+baseline with your change. The caps are constants in `scripts/line-cap.mjs`, which has its
+own tests: `node --test scripts/line-cap-selftest.mjs`.
 
 ## House rules that differ from most Go repositories
 

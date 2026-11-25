@@ -25,6 +25,9 @@ func newMCPCommand(env *Env) *cobra.Command {
 			"  --scope LIST      offer only tools whose required scopes are all in LIST\n" +
 			"  --allow-secrets   offer the tools that put secret values (environment variables,\n" +
 			"                    database passwords) into the conversation. Off by default.\n\n" +
+			"Server orders and the dollar wallet are covered (list_server_plans, quote_server_order,\n" +
+			"order_server, create_wallet_topup_link). An agent can never pay: it hands you a payment link\n" +
+			"or a portal link, and you complete the payment yourself.\n\n" +
 			"For a hosted connection instead, point the client at\n" +
 			"https://mcp.techbeaver.io/mcp and approve it in your browser.",
 		Args: cobra.NoArgs,

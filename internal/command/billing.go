@@ -37,20 +37,24 @@ func newInvoicesCommand(env *Env) *cobra.Command {
 // newInvoicePayCommand asks the platform to prepare a payment. It cannot
 // complete one: that happens on the payment page, by a person.
 func newInvoicePayCommand(env *Env) *cobra.Command {
-	return &cobra.Command{
+	var key string
+	cmd := &cobra.Command{
 		Use:   "pay ID",
 		Short: "Prepare a payment for an invoice",
 		Long: "Produces a payment link. It cannot complete a payment: only you can, on the\n" +
-			"payment page. An invoice already covered by credit may settle with no link.",
+			"payment page. An invoice already covered by credit may settle with no link.\n\n" +
+			"Each run sends its own random idempotency key, reused for any retry inside the run. If a\n" +
+			"run ends without a clear answer, repeat it with the --idempotency-key it printed and the\n" +
+			"platform returns the first answer instead of preparing a second payment.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := env.Authenticate(cmd.Context())
 			if err != nil {
 				return err
 			}
-			envelope, err := s.Client.Do(cmd.Context(), s.Token, client.Request{
+			envelope, err := sendCharge(cmd.Context(), env, s, client.Request{
 				Method: http.MethodPost, Path: "/billing/invoices/" + url.PathEscape(args[0]) + "/pay",
-			})
+			}, key)
 			if err != nil {
 				return err
 			}
@@ -68,6 +72,8 @@ func newInvoicePayCommand(env *Env) *cobra.Command {
 			return w.Object(obj)
 		},
 	}
+	addIdempotencyKeyFlag(cmd, &key)
+	return cmd
 }
 
 func newReferralsCommand(env *Env) *cobra.Command {

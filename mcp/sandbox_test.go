@@ -122,7 +122,7 @@ func TestSandboxToolsExistAndAreClassifiedByWhatTheyDo(t *testing.T) {
 		t.Errorf("checkout scopes %v", got)
 	}
 	for name := range specs {
-		if strings.Contains(name, "sandbox") && !contains(sandboxToolNames, name) && !contains(sandboxOpsToolNames, name) {
+		if strings.Contains(name, "sandbox") && !hasName(sandboxToolNames, name) && !hasName(sandboxOpsToolNames, name) {
 			t.Errorf("tool %q is a sandbox tool nobody listed here", name)
 		}
 		if strings.Contains(name, "destroy") && strings.Contains(name, "sandbox") {
@@ -131,7 +131,7 @@ func TestSandboxToolsExistAndAreClassifiedByWhatTheyDo(t *testing.T) {
 	}
 }
 
-func contains(list []string, s string) bool {
+func hasName(list []string, s string) bool {
 	for _, v := range list {
 		if v == s {
 			return true

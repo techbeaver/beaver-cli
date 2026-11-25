@@ -27,7 +27,7 @@ func NewRoot(env *Env) *cobra.Command {
 	f.StringVar(&env.flags.host, "host", "", "API host to talk to")
 	f.StringVar(&env.flags.project, "project", "", "project to act on")
 	f.StringVar(&env.flags.app, "app", "", "app to act on")
-	f.BoolVar(&env.flags.debug, "debug", false, "print request diagnostics, with credentials redacted")
+	f.BoolVar(&env.flags.debug, "debug", false, "print one line per API request to stderr: method, path, status, time and request id (never credentials, query values or bodies)")
 
 	root.AddCommand(
 		newAuthCommand(env),

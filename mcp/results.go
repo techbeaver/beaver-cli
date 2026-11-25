@@ -91,3 +91,17 @@ type LogResult struct {
 	Truncated bool     `json:"truncated" jsonschema:"true when older lines were dropped to keep the response small"`
 	Source    string   `json:"source" jsonschema:"which log this came from"`
 }
+
+// ServerOrderResult is what order_server returns: a hosted payment link (naira) or a portal link (dollars), never both.
+type ServerOrderResult struct {
+	Summary             string         `json:"summary" jsonschema:"what was created, in one line"`
+	OrderID             string         `json:"orderId" jsonschema:"the draft order's id. Nothing is provisioned and nothing is charged until the customer pays"`
+	Currency            string         `json:"currency" jsonschema:"the currency the order is billed in, decided by the account"`
+	PaymentURL          string         `json:"paymentUrl,omitempty" jsonschema:"a hosted payment page the customer must open themselves (naira orders)"`
+	PortalCheckoutURL   string         `json:"portalCheckoutUrl,omitempty" jsonschema:"the portal page where the customer confirms paying for a dollar order from their wallet. You cannot do it for them (dollar orders)"`
+	WalletCoversOrder   *bool          `json:"walletCoversOrder,omitempty" jsonschema:"for a dollar order: whether the wallet balance covers it now. Absent when it could not be read"`
+	ShortfallMinor      *int64         `json:"shortfallMinor,omitempty" jsonschema:"for a dollar order the wallet does not cover: how many cents are missing"`
+	SuggestedTopUpMinor *int64         `json:"suggestedTopUpMinor,omitempty" jsonschema:"the top-up amount in cents that would cover the shortfall, worked out by TechBeaver. Absent when one top-up cannot"`
+	Order               map[string]any `json:"order,omitempty" jsonschema:"the draft order exactly as the TechBeaver API returned it"`
+	NextStep            string         `json:"nextStep" jsonschema:"what to tell the customer to do now"`
+}

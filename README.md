@@ -51,6 +51,10 @@ beaver apps env set LOG_LEVEL=debug        # other variables are kept; --replace
 beaver apps env list                       # names only, values are masked; --reveal needs secrets:read
 printf %s "$VALUE" | beaver apps env check DATABASE_URL   # is it set, does it match, without revealing it
 beaver billing invoices list
+beaver billing invoices pay INVOICE_ID     # prints a payment link; add --idempotency-key K to retry safely
+beaver apps deployments                    # revisions, newest first; the live one has isActive true
+beaver apps rollback --revision REVISION   # put a named earlier revision back, nothing is rebuilt
+beaver --debug apps list                   # one stderr line per request, never credentials or bodies
 ```
 
 ## Sandboxes
@@ -167,6 +171,12 @@ What the client can reach is decided by whoever starts the server, never by the 
 - `beaver mcp --allow-secrets` also offers the tools that put secret values (environment variables,
   database passwords) into the conversation. They are off by default, and need a credential granted
   `secrets:read`.
+
+Servers and the dollar wallet are covered too, by `list_server_plans`, `quote_server_order`,
+`order_server` and `create_wallet_topup_link`. An agent can never pay. A naira server order returns a
+Paystack payment link, a dollar order returns a portal link where you confirm the wallet payment, and a
+wallet top-up is a Stripe hosted link. `order_server` creates a draft only: nothing is provisioned or
+charged until you pay.
 
 For a hosted connection instead, point your client at `https://mcp.techbeaver.io/mcp` and approve it
 in the browser.

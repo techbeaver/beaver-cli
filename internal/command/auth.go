@@ -119,7 +119,7 @@ func readPastedToken(ctx context.Context, env *Env, host string) (*credential.To
 	}
 
 	tok := &credential.Token{AccessToken: token, Host: host}
-	if expiry, scopeList, err := describeCredential(ctx, host, token); err == nil {
+	if expiry, scopeList, err := describeCredential(ctx, env, host, token); err == nil {
 		tok.ExpiresAt = expiry
 		tok.Scopes = scopeList
 	} else {
@@ -129,8 +129,11 @@ func readPastedToken(ctx context.Context, env *Env, host string) (*credential.To
 }
 
 // describeCredential asks the platform what a token is and when it lapses.
-func describeCredential(ctx context.Context, host, token string) (time.Time, []string, error) {
+func describeCredential(ctx context.Context, cliEnv *Env, host, token string) (time.Time, []string, error) {
 	api := client.New(host, "beaver/"+Version)
+	if cliEnv.flags.debug {
+		api.Debug = cliEnv.Err
+	}
 	env, err := api.Do(ctx, token, client.Request{Method: http.MethodGet, Path: "/mcp/whoami"})
 	if err != nil {
 		return time.Time{}, nil, err
