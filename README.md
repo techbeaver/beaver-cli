@@ -73,7 +73,10 @@ beaver sandbox plans                                  # plans and prices, read l
 beaver sandbox quote --plan PLAN_ID --slots 2         # what it costs your account
 beaver sandbox buy --plan PLAN_ID --slots 2           # prints a payment link; beaver cannot pay
 beaver sandbox usage                                  # balance, hourly burn, hours remaining
-beaver sandbox subscriptions                          # slots bought and in use
+beaver sandbox subscriptions                          # slots bought and in use, and whether auto-renew or the card top-up is on
+beaver sandbox statements list                        # monthly statements of by-the-hour use, newest first
+beaver sandbox statements current                     # the month so far, with line items
+beaver sandbox statements show STATEMENT_ID
 beaver sandbox add-slots quote SUBSCRIPTION_ID --slots 1
 
 beaver sandbox create "my box"                        # uses a free slot, sends an Idempotency-Key
@@ -103,9 +106,20 @@ beaver sandbox exec-cancel ID EXEC_ID
 
 Results are kept for 10 minutes after a command ends.
 
+A statement is a summary of charges that were already invoiced and settled, never an invoice, and the
+statements commands only read (`billing:read`). An open statement lists the windows settled so far, not
+the hours still running: `beaver sandbox usage` has that estimate.
+
+By the hour: creating or starting a sandbox on a by-the-hour subscription spends your balance, which needs
+`billing:spend`. No sign in or agent connection can be granted it, so beaver is refused with
+`billing_spend_required` and nothing is created or charged. A monthly slot needs only `sandbox:write`.
+`beaver sandbox subscriptions` shows which kind each subscription is.
+
 Not available to the CLI, because the platform keeps those routes closed to tokens: remote file
-delete, subscription changes other than the add-slots quote (reduce, cancel, resume), by-the-hour
-activation and events. `buy` only returns a payment link: paying from a balance is not offered.
+delete, subscription changes other than the add-slots quote (reduce, cancel, resume), turning
+auto-renew or the by-the-hour card top-up on or off (use the portal), by-the-hour activation and events.
+`buy` only returns a payment link: paying from a balance is not offered. When a dollar wallet is short,
+the link is a wallet top-up page, and the purchase is paid from the wallet by itself once it lands.
 
 Pin a project and application once, and the commands in that directory get shorter:
 
@@ -171,6 +185,10 @@ What the client can reach is decided by whoever starts the server, never by the 
 - `beaver mcp --allow-secrets` also offers the tools that put secret values (environment variables,
   database passwords) into the conversation. They are off by default, and need a credential granted
   `secrets:read`.
+
+Sandboxes are covered by tools for plans, usage, monthly statements (`list_sandbox_statements`,
+`get_current_sandbox_statements`, `get_sandbox_statement`), buying, lifecycle, commands and files.
+Destroying a sandbox is not a tool: use `beaver sandbox destroy`.
 
 Servers and the dollar wallet are covered too, by `list_server_plans`, `quote_server_order`,
 `order_server` and `create_wallet_topup_link`. An agent can never pay. A naira server order returns a

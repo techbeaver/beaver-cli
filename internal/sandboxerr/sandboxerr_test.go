@@ -146,3 +146,27 @@ func TestRateLimitTellsTheWaitAndNeverOverstates(t *testing.T) {
 		t.Errorf("the code must not be the message: %q", got)
 	}
 }
+
+func TestSpendRequiredNamesThePermissionAndTheWayOut(t *testing.T) {
+	for _, code := range []string{"billing_spend_required", "BILLING_SPEND_REQUIRED", " billing_spend_required "} {
+		err := Describe(&client.APIError{StatusCode: 403, Code: code, Message: "server wording that must not be the only advice",
+			Data: map[string]any{"code": "billing_spend_required", "requiredScope": "billing:spend"}})
+		msg := err.Error()
+		for _, want := range []string{"billing:spend", "by-the-hour", "monthly slot", "Nothing was created or charged"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("%q: message lacks %q: %s", code, want, msg)
+			}
+		}
+		if strings.Contains(msg, "--scope billing:spend") {
+			t.Errorf("a scope no sign in can hold must not be offered as a login flag: %s", msg)
+		}
+		var apiErr *client.APIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusForbidden {
+			t.Errorf("the original error must stay on the chain so exit codes follow it")
+		}
+	}
+	other := Describe(&client.APIError{StatusCode: 403, Code: "wallet_spend_requires_human", Message: "Paying from the USD wallet needs the account owner."})
+	if !strings.Contains(other.Error(), "needs the account owner") {
+		t.Errorf("another 403 keeps the server's own words: %v", other)
+	}
+}

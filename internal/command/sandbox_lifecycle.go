@@ -122,7 +122,9 @@ func newSandboxCreateCommand(env *Env) *cobra.Command {
 		Use:   "create NAME",
 		Short: "Create and start a sandbox on a slot you already hold",
 		Long: "Uses a free slot of the project's subscription. It buys nothing. A running sandbox uses your\n" +
-			"hourly allowance, so stop it when you are done. " + sandboxrules.NameRule,
+			"hourly allowance, so stop it when you are done. On a by-the-hour subscription this spends your balance and\n" +
+			"needs billing:spend, which a sign in cannot hold: it is refused and nothing is charged. A monthly slot is fine.\n" +
+			sandboxrules.NameRule,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, err := checkSandboxName(args[0])

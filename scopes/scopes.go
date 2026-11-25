@@ -100,7 +100,7 @@ var descriptions = map[string]string{
 	DBaaSWrite:      "Create managed databases, databases inside them, roles and backups",
 	DBaaSDestroy:    "Delete managed databases and restore over their data. Every deletion still needs you to approve it in your browser",
 	SandboxRead:     "See your sandboxes and their status. Nothing inside them",
-	SandboxWrite:    "Create sandboxes and start or stop them. This cannot buy anything",
+	SandboxWrite:    "Create sandboxes and start or stop them. Running one uses the slots and balance you already have; this cannot buy anything",
 	SandboxFiles:    "Read and write any file inside your sandboxes",
 	SandboxExec:     "Run any command inside your sandboxes. A command can also read and write any file there, so this includes file access",
 	SandboxDestroy:  "Delete sandboxes and everything on their disk. Every deletion still needs you to approve it in your browser",

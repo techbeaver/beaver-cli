@@ -69,6 +69,7 @@ type sandboxPurchaseInput struct {
 
 func registerSandboxTools(r *Registry) {
 	registerSandboxLifecycleTools(r)
+	registerSandboxStatementTools(r)
 	register(r, toolSpec{
 		Name:     "list_sandbox_plans",
 		Title:    "List sandbox plans",
@@ -96,7 +97,7 @@ func registerSandboxTools(r *Registry) {
 		Title:    "Get sandbox usage for a project",
 		Scopes:   []string{scopes.BillingRead},
 		ReadOnly: true, Idempotent: true,
-		Description: "A project's sandbox position: the slots bought, how many are in use, when the period ends, the balance available to run them, the hourly burn, the estimated hours remaining and each sandbox's usage this period. If balanceHidden is true the caller may not see the balance: say it is hidden, never that it is zero. Read every figure from the result rather than working it out.",
+		Description: "A project's sandbox position: the slots bought, how many are in use, when the period ends, the balance available to run them, the hourly burn, the estimated hours remaining and each sandbox's usage this period. Each subscription in item.subscriptions carries billingMode (monthly or hourly), and autoRenew (monthly only), hourlyAutoTopUp and hourlyTopUp {amountMinor, currency, max, windowHours} (hourly only): when a field is absent, say it was not reported, never that it is off. Those two switches cannot be changed from here. If balanceHidden is true the caller may not see the balance: say it is hidden, never that it is zero. Read every figure from the result rather than working it out.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
 		ProjectID string `json:"projectId" jsonschema:"the project's id, from list_projects"`
 	}) (*ObjectResult, error) {
@@ -140,7 +141,7 @@ func registerSandboxTools(r *Registry) {
 		Name:        "create_sandbox_checkout_link",
 		Title:       "Prepare payment for sandbox slots",
 		Scopes:      []string{scopes.BillingCheckout},
-		Description: "Prepares the purchase of sandbox slots and returns a hosted payment page for the customer. It does NOT pay: hand the link over and tell the customer only they can complete it, and that nothing is bought until they do. It cannot pay from the balance, a saved card or credit, for any connection. For a customer billed in dollars there may be no card page: the answer then says the wallet has to be topped up first and carries the top-up link, which you hand over the same way. Price it first with quote_sandbox_slots. Take planId from list_sandbox_plans.",
+		Description: "Prepares the purchase of sandbox slots and returns a hosted payment page for the customer. It does NOT pay: hand the link over and tell the customer only they can complete it, and that nothing is bought until they do. It cannot pay from the balance, a saved card or credit, for any connection. For a customer billed in dollars with a short wallet, the answer is status needs_topup and paymentUrl is a wallet top-up page, which you hand over the same way: when the top-up lands the purchase is paid from the wallet automatically, so you must not run it again. Price it first with quote_sandbox_slots. Take planId from list_sandbox_plans.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
 		ProjectID      string `json:"projectId" jsonschema:"the project to buy the slots for, from list_projects"`
 		PlanID         string `json:"planId" jsonschema:"the sandbox plan, from list_sandbox_plans"`
@@ -217,18 +218,22 @@ func requireSandboxCheckoutSource(source string) error {
 	return fmt.Errorf("paymentSource %q is refused: this tool only produces a payment link the customer opens themselves. Paying a sandbox purchase from the balance, a saved card or credit is a person's act, for every connection. Leave paymentSource empty", source)
 }
 
-// sandboxCheckoutResult never promises a page the API did not return.
+// sandboxCheckoutResult never promises a page the API did not return. A dollar customer whose wallet is short
+// gets status needs_topup with the wallet top-up page in paymentUrl: when the top-up lands the purchase is paid
+// from the wallet by itself, so running the purchase again would only raise a second invoice.
 func sandboxCheckoutResult(item map[string]any) *CheckoutResult {
-	link := pick(item, "authorizationUrl", "paymentUrl", "checkoutUrl")
-	topUp := pick(item, "topUpUrl", "topUpCheckoutUrl", "walletTopUpUrl")
+	link := pick(item, "paymentUrl")
 	out := &CheckoutResult{Summary: "Sandbox slots payment page ready.", Result: item, PaymentURL: link}
+	status, _ := item["status"].(string)
 	switch {
+	case link != "" && status == "needs_topup":
+		out.Summary = "The wallet has to be topped up before these slots can be bought."
+		out.NextStep = "Give the customer this top-up link and say they must complete it themselves. When the top-up lands, the purchase is paid from the wallet automatically and the slots are added: do not call this tool again. Nothing is bought until they do. Poll get_sandbox_usage to see the slots appear."
 	case link != "":
 		out.NextStep = "Give the customer this link and ask them to complete the payment themselves. You cannot pay it for them, and the slots are added only after they do. Poll get_sandbox_usage to see when they appear."
-	case topUp != "":
-		out.Summary = "The wallet has to be topped up before these slots can be bought."
-		out.PaymentURL = topUp
-		out.NextStep = "Give the customer this top-up link and say the wallet must be topped up first and they must complete it themselves. Nothing is bought yet. Once they have funded it, call this tool again with a new idempotencyKey."
+	case status == "paid":
+		out.Summary = "The API reports this purchase as paid. You did not pay it."
+		out.NextStep = "Tell the customer exactly that, and confirm with get_sandbox_usage."
 	default:
 		out.Summary = "The API returned no payment page."
 		out.NextStep = "Do not tell the customer a page is waiting or that anything was bought. Read the result and the message in it and tell the customer plainly what it says."

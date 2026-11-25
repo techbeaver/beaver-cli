@@ -98,14 +98,16 @@ func okSandbox(w http.ResponseWriter, r *http.Request, _ int) {
 	}
 }
 
-var sandboxToolNames = []string{"list_sandbox_plans", "get_sandbox_usage", "quote_sandbox_slots", "create_sandbox_checkout_link"}
+var sandboxToolNames = []string{"list_sandbox_plans", "get_sandbox_usage", "quote_sandbox_slots", "create_sandbox_checkout_link",
+	"list_sandbox_statements", "get_current_sandbox_statements", "get_sandbox_statement"}
 
 func TestSandboxToolsExistAndAreClassifiedByWhatTheyDo(t *testing.T) {
 	specs := map[string]toolSpec{}
 	for _, s := range AllTools().Specs() {
 		specs[s.Name] = s
 	}
-	readOnly := map[string]bool{"list_sandbox_plans": true, "get_sandbox_usage": true, "quote_sandbox_slots": true}
+	readOnly := map[string]bool{"list_sandbox_plans": true, "get_sandbox_usage": true, "quote_sandbox_slots": true,
+		"list_sandbox_statements": true, "get_current_sandbox_statements": true, "get_sandbox_statement": true}
 	for _, name := range sandboxToolNames {
 		spec, ok := specs[name]
 		if !ok {
@@ -241,13 +243,14 @@ func TestSandboxCheckoutRefusesBeforeTheNetwork(t *testing.T) {
 
 func TestSandboxCheckoutAcceptsTheCheckoutSourceAndHandlesAWalletTopUp(t *testing.T) {
 	session, _ := connectSandbox(t, scopes.Default, func(w http.ResponseWriter, _ *http.Request, _ int) {
-		sbJSON(w, `{"status":"needs_topup","topUpUrl":"https://stripe.test/topup","message":"Top up first."}`)
+		sbJSON(w, `{"status":"needs_topup","paymentUrl":"https://stripe.test/topup","message":"Top up first."}`)
 	})
 	res := callTool(t, session, "create_sandbox_checkout_link", map[string]any{
 		"projectId": sbProject, "planId": sbPlan, "slots": 1, "idempotencyKey": "k", "paymentSource": "Checkout",
 	})
 	text := resultText(res)
-	if res.IsError || !strings.Contains(text, "stripe.test/topup") || !strings.Contains(text, "topped up") {
+	if res.IsError || !strings.Contains(text, "stripe.test/topup") || !strings.Contains(text, "topped up") ||
+		!strings.Contains(text, "do not call this tool again") || strings.Contains(text, "with a new idempotencyKey") {
 		t.Fatalf("top-up case: %s", text)
 	}
 }
@@ -599,6 +602,7 @@ func TestSandboxOpsToolsMapTheNewErrorCodes(t *testing.T) {
 		{503, "SERVICE_PAUSED", "Paused.", "do not retry"},
 		{503, "billing_unavailable", "x", "cannot be checked right now"},
 		{403, "insufficient_scope", "This token was not granted sandbox:exec.", "grant that permission"},
+		{403, "billing_spend_required", "server wording", "billing:spend"},
 	}
 	for _, tc := range cases {
 		session, _ := connectSandbox(t, sandboxAll, func(w http.ResponseWriter, _ *http.Request, _ int) { sbFailure(w, tc.status, tc.code, tc.msg) })

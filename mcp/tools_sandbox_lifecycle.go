@@ -90,7 +90,7 @@ func registerSandboxLifecycleTools(r *Registry) {
 		Name:   "create_sandbox",
 		Title:  "Create and start a sandbox",
 		Scopes: []string{scopes.SandboxWrite},
-		Description: "Creates a sandbox in a project and starts it, using a slot the customer already holds. It buys nothing: with no free slot, or at a cap, or while sandboxes are paused, it is refused and the answer says why; tell the customer that and do not retry in a loop. A running sandbox costs the customer by the hour on an hourly plan, so stop it when you are done. Creation is rate limited per connection. " + sandboxrules.NameRule + " " +
+		Description: "Creates a sandbox in a project and starts it, using a slot the customer already holds. It buys nothing: with no free slot, or at a cap, or while sandboxes are paused, it is refused and the answer says why; tell the customer that and do not retry in a loop. On a by-the-hour subscription this spends the customer's balance and needs the billing:spend permission, which no connection made through a consent screen can be granted: the answer is then billing_spend_required, nothing is created or charged, and the customer should use a monthly slot (sandbox:write is enough) or do it in the portal. A running sandbox costs the customer by the hour on an hourly plan, so stop it when you are done. Creation is rate limited per connection. " + sandboxrules.NameRule + " " +
 			"Send the same idempotencyKey if you retry, so one create is never two.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
 		ProjectID      string `json:"projectId" jsonschema:"the project, from list_projects"`
@@ -131,7 +131,7 @@ func registerSandboxLifecycleTools(r *Registry) {
 		Name:        "start_sandbox",
 		Title:       "Start a stopped sandbox",
 		Scopes:      []string{scopes.SandboxWrite},
-		Description: "Starts a stopped sandbox from its disk. It takes a free slot, so it is refused when none is free or sandboxes are paused. Check get_sandbox first: a sandbox that is already running or destroyed cannot be started.",
+		Description: "Starts a stopped sandbox from its disk. It takes a free slot, so it is refused when none is free or sandboxes are paused. Check get_sandbox first: a sandbox that is already running or destroyed cannot be started. On a by-the-hour subscription starting it spends the customer's balance and needs billing:spend, which a connection cannot be granted: the answer is billing_spend_required and nothing is started; a monthly slot needs only sandbox:write.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in sandboxIDInput) (*ObjectResult, error) {
 		return sandboxTransition(ctx, deps, call, in.SandboxID, "start", "Sandbox started.")
 	})

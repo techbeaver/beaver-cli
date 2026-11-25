@@ -30,6 +30,12 @@ func okAll(w http.ResponseWriter, r *http.Request, _ int) {
 		sbOK(w, plansJSON)
 	case strings.HasSuffix(p, "/usage"):
 		sbOK(w, usageJSON)
+	case strings.HasSuffix(p, "/statements"):
+		sbOK(w, statementListJSON)
+	case strings.HasSuffix(p, "/statements/current"):
+		sbOK(w, statementCurrentJSON)
+	case strings.Contains(p, "/statements/"):
+		sbOK(w, statementDetailJSON)
 	case strings.HasSuffix(p, "/add-slots/quote"), strings.HasSuffix(p, "/billing/quote"):
 		sbOK(w, quoteJSON)
 	case strings.HasSuffix(p, "/billing/purchase"):

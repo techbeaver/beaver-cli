@@ -131,6 +131,8 @@ func apiHeadline(e *client.APIError) string {
 		return "Your session is no longer valid. Run beaver auth login."
 	case "insufficient_scope":
 		return scopeMessage(e)
+	case "billing_spend_required":
+		return spendRequiredMessage
 	case "confirmation_required", "confirmation_pending":
 		return "This needs your approval in a browser first. Run the command again to get the approval link."
 	}
@@ -185,6 +187,11 @@ var fallbacks = map[string]string{
 	"invalid_fields":                 "The request was not accepted. Check the project, plan and slot count.",
 	"payment_provider_unavailable":   "The payment provider is not available right now. Try again in a moment.",
 }
+
+// spendRequiredMessage is the answer to a create or start on a by-the-hour subscription. billing:spend is not a
+// scope a consent screen can grant, so naming it as something to add would send the customer nowhere.
+const spendRequiredMessage = "This sandbox is on a by-the-hour subscription, and starting one spends your balance, which needs billing:spend. " +
+	"No consent screen can grant billing:spend, so a beaver sign-in or agent connection cannot hold it. Nothing was created or charged. Use a monthly slot (sandbox:write is enough), or do it from the portal."
 
 func orDefault(msg, fallback string) string {
 	if msg == "" {
