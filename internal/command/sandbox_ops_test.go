@@ -865,7 +865,7 @@ func TestEverySandboxSubcommandMapsTheNewConflictCodes(t *testing.T) {
 		status int
 		want   string
 	}{
-		"no_free_slot": {409, "Every slot is in use"}, "sandbox_not_running": {409, "not running"}, "sandbox_quarantined": {409, "quarantined"},
+		"no_free_slot": {409, "Every slot is in use"}, "sandbox_slot_holds_stopped": {409, "running or stopped"}, "sandbox_not_running": {409, "not running"}, "sandbox_quarantined": {409, "quarantined"},
 		"sandbox_agent_unreachable": {502, "did not answer"}, "sandbox_exec_unavailable": {503, "not available yet"},
 		"sandbox_busy": {429, "Wait a moment"}, "sandbox_create_rate_limited": {429, "Wait a moment"},
 	}

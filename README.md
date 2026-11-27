@@ -79,7 +79,7 @@ beaver sandbox statements current                     # the month so far, with l
 beaver sandbox statements show STATEMENT_ID
 beaver sandbox add-slots quote SUBSCRIPTION_ID --slots 1
 
-beaver sandbox create "my box"                        # uses a free slot, sends an Idempotency-Key
+beaver sandbox create "my box"                        # uses a free slot (a slot holds one sandbox, running or stopped), sends an Idempotency-Key
 beaver sandbox list | get ID | start ID | stop ID
 beaver sandbox destroy ID                             # needs your approval in a browser, like apps and databases
 

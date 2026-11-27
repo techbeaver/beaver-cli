@@ -10,7 +10,7 @@ import (
 	"github.com/techbeaver/beaver-cli/internal/output"
 )
 
-var subscriptionColumns = []string{"id", "plan", "mode", "status", "slots", "inUse", "perSlotMonthly", "nextCharge", "autoRenew", "hourlyAutoTopUp", "periodEnd"}
+var subscriptionColumns = []string{"id", "plan", "mode", "status", "slots", "inUse", "held", "perSlotMonthly", "nextCharge", "autoRenew", "hourlyAutoTopUp", "periodEnd"}
 
 func subscriptionRows(subs []map[string]any) []map[string]any {
 	rows := make([]map[string]any, 0, len(subs))
@@ -24,7 +24,7 @@ func subscriptionDisplay(sub map[string]any) map[string]any {
 	cur := text(sub["currency"])
 	row := map[string]any{
 		"id": sub["id"], "plan": sub["planName"], "mode": sub["billingMode"], "status": sub["status"],
-		"slots": sub["slots"], "inUse": sub["slotsInUse"],
+		"slots": sub["slots"], "inUse": sub["slotsInUse"], "held": sub["sandboxesHeld"],
 		"perSlotMonthly": formatMinor(sub["unitMonthlyMinor"], cur),
 		"hourlyPrice":    formatMinor(sub["hourlyMinor"], cur),
 		"nextCharge":     formatMinor(sub["nextChargeMinor"], cur),
@@ -89,7 +89,7 @@ func newSandboxSubscriptionsCommand(env *Env) *cobra.Command {
 		Use:     "subscriptions [ID]",
 		Aliases: []string{"subscription"},
 		Short:   "List a project's sandbox subscriptions, or show one",
-		Long: "Shows slots bought and in use, price and next charge, and whether auto-renew (monthly) or the card top-up\n" +
+		Long: "Shows slots bought, in use (running) and held (running or stopped: a slot holds one sandbox), price and next charge, and whether auto-renew (monthly) or the card top-up\n" +
 			"for by-the-hour use is on. Listing needs a project; showing one needs only its id.\n" +
 			"Turning auto-renew or the top-up on or off is not possible from beaver: use the portal.",
 		Args: cobra.MaximumNArgs(1),
