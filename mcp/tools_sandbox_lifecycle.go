@@ -90,7 +90,7 @@ func registerSandboxLifecycleTools(r *Registry) {
 		Name:   "create_sandbox",
 		Title:  "Create and start a sandbox",
 		Scopes: []string{scopes.SandboxWrite},
-		Description: "Creates a sandbox in a project and starts it, using a slot the customer already holds. It buys nothing: with no free slot, or at a cap, or while sandboxes are paused, it is refused and the answer says why; tell the customer that and do not retry in a loop. On a by-the-hour subscription this spends the customer's balance and needs the billing:spend permission, which no connection made through a consent screen can be granted: the answer is then billing_spend_required, nothing is created or charged, and the customer should use a monthly slot (sandbox:write is enough) or do it in the portal. A running sandbox costs the customer by the hour on an hourly plan, so stop it when you are done. Creation is rate limited per connection. " + sandboxrules.NameRule + " " +
+		Description: "Creates a sandbox in a project and starts it, using a slot the customer already holds. It buys nothing. A slot holds one sandbox, running or stopped, so stopping a sandbox does not make room for a new one and destroying it does: with no free slot (no_free_slot, or sandbox_slot_holds_stopped when stopped sandboxes hold the slots), or at a cap, or while sandboxes are paused, it is refused and the answer says why; tell the customer that and do not retry in a loop. On a by-the-hour subscription this spends the customer's balance and needs the billing:spend permission, which no connection made through a consent screen can be granted: the answer is then billing_spend_required, nothing is created or charged, and the customer should use a monthly slot (sandbox:write is enough) or do it in the portal. A running sandbox costs the customer by the hour on an hourly plan, so stop it when you are done. Creation is rate limited per connection. " + sandboxrules.NameRule + " " +
 			"Send the same idempotencyKey if you retry, so one create is never two.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in struct {
 		ProjectID      string `json:"projectId" jsonschema:"the project, from list_projects"`
@@ -123,7 +123,7 @@ func registerSandboxLifecycleTools(r *Registry) {
 		return &ObjectResult{
 			Summary:  "Sandbox created. Its status is in item.status.",
 			Item:     item,
-			NextStep: "Stop it with stop_sandbox when the work is done: a stopped sandbox keeps its disk and stops using the hourly allowance.",
+			NextStep: "Stop it with stop_sandbox when the work is done: a stopped sandbox keeps its disk and stops using the hourly allowance. On a by-the-hour subscription a stopped sandbox is deleted after about a day unless it is started again; item.deleteAfter, when present, is the date.",
 		}, nil
 	})
 
@@ -141,7 +141,7 @@ func registerSandboxLifecycleTools(r *Registry) {
 		Title:       "Stop a sandbox",
 		Scopes:      []string{scopes.SandboxWrite},
 		Idempotent:  true,
-		Description: "Stops a running sandbox and keeps its disk, so it can be started again. Reversible and safe to call; do it when the work is done. This is not deletion.",
+		Description: "Stops a running sandbox and keeps its disk, so it can be started again. Reversible and safe to call; do it when the work is done. This is not deletion, and the sandbox still holds its slot. On a by-the-hour subscription a sandbox left stopped is deleted after about a day, after an email to the customer: if the answer carries item.deleteAfter, tell the customer that date.",
 	}, func(ctx context.Context, deps *Deps, call *Call, in sandboxIDInput) (*ObjectResult, error) {
 		return sandboxTransition(ctx, deps, call, in.SandboxID, "stop", "Sandbox stopped.")
 	})

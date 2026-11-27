@@ -70,7 +70,7 @@ func newSandboxListCommand(env *Env) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return output.New(env.Out, spec).List(rows, "id", "name", "status", "vcpu", "memoryMb", "diskGb", "startedAt", "expiresAt")
+			return output.New(env.Out, spec).List(rows, "id", "name", "status", "vcpu", "memoryMb", "diskGb", "startedAt", "expiresAt", "deleteAfter")
 		},
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "list across every project, ignoring the selected one")
@@ -121,8 +121,10 @@ func newSandboxCreateCommand(env *Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create NAME",
 		Short: "Create and start a sandbox on a slot you already hold",
-		Long: "Uses a free slot of the project's subscription. It buys nothing. A running sandbox uses your\n" +
-			"hourly allowance, so stop it when you are done. On a by-the-hour subscription this spends your balance and\n" +
+		Long: "Uses a free slot of the project's subscription. It buys nothing. A slot holds one sandbox, running or\n" +
+			"stopped: stopping one does not make room for a new one, destroying it does. A running sandbox uses your\n" +
+			"hourly allowance, so stop it when you are done. A stopped sandbox on a by-the-hour subscription is deleted\n" +
+			"after about a day unless it is started again; you are emailed first. On a by-the-hour subscription this spends your balance and\n" +
 			"needs billing:spend, which a sign in cannot hold: it is refused and nothing is charged. A monthly slot is fine.\n" +
 			sandboxrules.NameRule,
 		Args: cobra.ExactArgs(1),
@@ -228,9 +230,9 @@ func newSandboxDestroyCommand(env *Env) *cobra.Command {
 					"name":         text(sb["name"]),
 					"status":       text(sb["status"]),
 					"whatGoes":     "the sandbox and everything on its disk",
-					"whatSurvives": "nothing of the sandbox; its slot is free again",
+					"whatSurvives": "nothing of the sandbox; its slot can hold a new one",
 				},
-				RecoveryNote: "The sandbox and everything on its disk are deleted and cannot be recovered. The slot it used becomes free again.",
+				RecoveryNote: "The sandbox and everything on its disk are deleted and cannot be recovered. The slot it held can then hold a new sandbox.",
 			}, assumeYes, wait)
 			if err != nil {
 				return sandboxerr.Describe(err)
